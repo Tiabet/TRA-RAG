@@ -5,18 +5,32 @@ _prompt_template = """
 You are an expert metadata extraction engine specialized in transforming natural language passages into fully structured JSON metadata objects.
 
 You will be given a passage that describes one or more entities such as people, organizations, locations, works of art, events, products, biological entities, or concepts.  
-Your task is to extract **all information without omission** and convert it into a structured metadata JSON following the schema below.
+Your task is to extract **ALL information without ANY omission** and convert it into a structured metadata JSON following the schema below.
 
 ---
 
-### Output Requirements
+### ⚠️ CRITICAL REQUIREMENTS - NO INFORMATION LOSS
 
-- The output **must include every factual detail** from the passage — no omissions or summarizations.  
-- Metadata must be **hierarchical, semantically precise, and fully structured JSON**.  
+- **MANDATORY**: The output **MUST include EVERY SINGLE factual detail** from the passage
+- **NO omissions**: Every name, date, number, location, relationship, description, attribute MUST be captured
+- **NO summarizations**: Use exact quotes and full details from the original text
+- **NO interpretation**: Extract facts as stated, do not infer or add information not in the passage
+- Metadata must be **hierarchical, semantically precise, and fully structured JSON**
 - Each entity must have:
-  - `"type"` and `"subtype"` fields based on the **EntityTypeSchema** below.  
-- All relationships must be explicitly captured under a `"relations"` key.  
-- The final output must be **pure JSON**, with no commentary or explanations.
+  - `"type"` and `"subtype"` fields based on the **EntityTypeSchema** below  
+- All relationships must be explicitly captured under a `"relations"` key
+- The final output must be **pure JSON**, with no commentary or explanations
+
+### Information Preservation Checklist:
+✓ All names (people, places, organizations, works)
+✓ All dates (birth, death, founding, release, events)
+✓ All numbers (quantities, measurements, statistics, rankings)
+✓ All locations (countries, states, cities, addresses, coordinates)
+✓ All descriptions and qualifiers
+✓ All relationships and connections
+✓ All attributes and characteristics
+✓ All quoted text and terminology
+✓ All context and background information
 
 ---
 
@@ -215,8 +229,14 @@ metadata_construction_prompt = _prompt_template + ENTITY_TYPE_SCHEMA + """
 ---
 
 ### 🧠 Instruction:
-Now, transform the following passage into structured JSON metadata using the schema above.  
-Output **only** the final JSON object — no explanations, notes, or comments.
+- Now, transform the following passage into structured JSON metadata using the schema above.
+- Output **only** the final JSON object — no explanations, notes, or comments.
+- The output **must include every factual detail** from the passage — no omissions or summarizations.  
+- Metadata must be **hierarchical, semantically precise, and fully structured JSON**.  
+- Each entity must have:
+  - `"type"` and `"subtype"` fields based on the **EntityTypeSchema** below.  
+- All relationships must be explicitly captured under a `"relations"` key.  
+- The final output must be **pure JSON**, with no commentary or explanations.
 
 ### passage:
 {{input}}
