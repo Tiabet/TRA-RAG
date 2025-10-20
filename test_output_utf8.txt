@@ -1,0 +1,71 @@
+﻿================================================================================
+COMPREHENSIVE TEST: Multiple Types System
+================================================================================
+
+================================================================================
+QUERY: What year was the actor who portrayed Stephen Graham in the 2006 film about the Nuremberg trials born?
+================================================================================
+
+Extracted 3 entities:
+  1. Stephen Graham (target/critical) - 2 types
+  2. 2006 (attribute/important) - 2 types
+  3. Nuremberg trials (attribute/important) - 2 types
+
+Retrieval summary:
+  - Stephen Graham: 77 candidates → 1 LLM → 1 final
+  - 2006: 0 candidates → 0 LLM → 70 final
+  - Nuremberg trials: 36 candidates → 0 LLM → 0 final
+
+Total passages: 70
+Expected answers:
+  [FOUND] Stephen Graham
+
+Top 3 results:
+  1. Stephen Graham (Person/Actor)
+  2. Tracy Melchior (Person/Actor)
+  3. The Wolf of Wall Street (2013 film) (WorkOfArt/Film)
+
+================================================================================
+QUERY: What role do state institutions play in Argentina's education system?
+================================================================================
+
+Extracted 3 entities:
+  1. state institutions (target/critical) - 3 types
+  2. Argentina (context/important) - 2 types
+  3. education system (attribute/important) - 3 types
+
+Retrieval summary:
+  - state institutions: 46 candidates → 1 LLM → 1 final
+  - education system: 23 candidates → 3 LLM → 4 final
+
+Total passages: 4
+Expected answers:
+  [FOUND] Education in Argentina
+  [FOUND] Free education
+
+Top 3 results:
+  1. Education in Argentina (Concept/SocialSystem)
+  2. Education in Morocco (Concept/SocialSystem)
+  3. Tertiary education (Concept/EducationalSystem)
+
+================================================================================
+QUERY: Where is Bee Cliff located?
+================================================================================
+
+Extracted 1 entities:
+  1. Bee Cliff (target/critical) - 3 types
+
+Retrieval summary:
+  - Bee Cliff: 19 candidates → 0 LLM → 1 final
+
+Total passages: 1
+Expected answers:
+  [FOUND] Bee Cliff
+  [MISS] Watauga River
+
+Top 3 results:
+  1. Bee Cliff (Tennessee) (Location/GeologicalFeature)
+
+================================================================================
+TEST COMPLETE
+================================================================================

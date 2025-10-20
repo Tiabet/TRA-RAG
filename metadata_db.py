@@ -321,6 +321,49 @@ class MetadataDB:
             }
         return None
     
+    def search_by_type(
+        self,
+        entity_type: str,
+        entity_subtype: Optional[str] = None
+    ) -> List[Dict]:
+        """
+        Search all passages matching the given type and subtype.
+        Used for Stage 1-B type filtering.
+        
+        Args:
+            entity_type: Entity type to filter by
+            entity_subtype: Optional entity subtype to filter by
+            
+        Returns:
+            List of passages with matching type/subtype
+        """
+        if entity_subtype:
+            query = """
+                SELECT title, type, subtype, metadata_json
+                FROM metadata
+                WHERE type = ? AND subtype = ?
+            """
+            params = [entity_type, entity_subtype]
+        else:
+            query = """
+                SELECT title, type, subtype, metadata_json
+                FROM metadata
+                WHERE type = ?
+            """
+            params = [entity_type]
+        
+        self.cursor.execute(query, params)
+        rows = self.cursor.fetchall()
+        
+        results = []
+        for row in rows:
+            results.append({
+                'title': row['title'],
+                'metadata': json.loads(row['metadata_json'])
+            })
+        
+        return results
+    
     def search_by_relation(self, target_entity: str) -> List[Dict]:
         """
         Search metadata that has relations to target_entity.
