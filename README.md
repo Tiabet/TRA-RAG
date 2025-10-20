@@ -9,10 +9,16 @@ ChunkRAG_v2/
 ├── Prompt/                              # LLM 프롬프트 정의
 │   ├── type_schema.py                   # 엔티티 타입 스키마
 │   ├── metadata_construction_prompt.py  # 메타데이터 생성 프롬프트
-│   └── entity_extraction_prompt.py      # 엔티티 추출 프롬프트
+│   ├── entity_extraction_prompt.py      # 엔티티 추출 프롬프트 (다중 타입)
+│   └── llm_filtering_prompt.py          # LLM semantic filtering 프롬프트
 │
 ├── build_metadata.py                    # 메타데이터 생성 (비동기)
 ├── extract_entities_from_dataset.py     # 질문에서 엔티티 추출
+├── hybrid_retrieval.py                  # Hybrid retrieval (value + type matching)
+├── metadata_db.py                       # SQLite FTS5 DB 관리
+│
+├── test_hybrid_retrieval.py             # Hybrid retrieval 종합 테스트
+├── tests_archive/                       # 개발 과정 테스트/디버그 파일 보관
 │
 ├── 2WikiMultihopQA/                     # 2WikiMultihopQA 데이터셋
 ├── HotpotQA/                            # HotpotQA 데이터셋
@@ -22,10 +28,11 @@ ChunkRAG_v2/
 │   ├── analyze_entity_results.py        # 엔티티 추출 결과 분석
 │   ├── test_entity_extraction.py        # 엔티티 추출 테스트
 │   ├── analyze_question_types.py        # 질문 타입 분포 분석
-│   ├── analyze_original_1000.py         # 1000개 데이터셋 분석
 │   └── ...                              # 기타 분석 스크립트
 │
-└── README_METADATA_BUILD.md             # 메타데이터 빌드 가이드
+├── README.md                            # 메인 문서
+├── README_METADATA_BUILD.md             # 메타데이터 빌드 가이드
+└── README_DB.md                         # DB 스키마 및 사용법
 ```
 
 ## 🚀 주요 기능
@@ -111,6 +118,74 @@ python extract_entities_from_dataset.py -i HotpotQA/hotpot.jsonl --concurrency 2
 # 결과 파일:
 # - HotpotQA/hotpot_metadata.json     (passage 메타데이터)
 # - HotpotQA/hotpot_entities.json     (질문 엔티티)
+```
+
+## 🔍 Hybrid Retrieval System
+
+### 다중 타입 추출 (Multiple Types per Entity)
+
+**문제**: 단일 타입 추출 시 LLM과 DB 스키마 불일치로 매칭 실패
+- 예: LLM이 "Concept/AcademicField" 추출 → DB에는 "Concept/SocialSystem"만 존재
+
+**해결**: 엔티티당 2-3개의 `possible_types` 추출
+
+```python
+# 이전 (단일 타입)
+{
+  "entity_name": "education system",
+  "type": "Concept",
+  "subtype": "AcademicField"  # DB에 없으면 매칭 실패!
+}
+
+# 현재 (다중 타입)
+{
+  "entity_name": "education system",
+  "possible_types": [
+    {"type": "Concept", "subtype": "EducationalSystem"},  # 4개 매칭
+    {"type": "Concept", "subtype": "SocialSystem"},       # 19개 매칭
+    {"type": "Concept", "subtype": "AcademicField"}       # 0개 (괜찮음)
+  ]
+}
+```
+
+### Hybrid Retrieval Pipeline
+
+```
+Query → Entity 추출
+         ↓
+┌─────────────────────────────────────┐
+│ Stage 1-A: Value Matching          │
+│ - Entity name FTS 검색              │
+│ - 모든 metadata 값에서 검색          │
+└─────────────────────────────────────┘
+         ↓
+┌─────────────────────────────────────┐
+│ Stage 1-B: Type Filtering           │
+│ 1. 여러 possible_types로 DB 검색     │
+│    (Type 1 + Type 2 + Type 3...)   │
+│ 2. LLM semantic filtering          │
+└─────────────────────────────────────┘
+         ↓
+┌─────────────────────────────────────┐
+│ Stage 2: Merge                      │
+│ - Value + Type 결과 병합             │
+│ - Title 기준 중복 제거               │
+└─────────────────────────────────────┘
+```
+
+### 성능 개선
+
+| 메트릭 | 이전 (단일 타입) | 현재 (다중 타입) | 개선율 |
+|--------|-----------------|-----------------|--------|
+| Types per entity | 1개 | 2-3개 | 200-300% |
+| Type matching (Argentina education) | 0개 | 23개 | ∞ |
+| 정답 발견 | 실패 | 성공 (#1위) | ✅ |
+
+### 테스트
+
+```bash
+# Hybrid retrieval 종합 테스트 (3가지 쿼리)
+python test_hybrid_retrieval.py
 ```
 
 ## 🔍 엔티티 타입 스키마
