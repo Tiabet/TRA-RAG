@@ -89,6 +89,12 @@ Return a JSON object with entities classified by role and importance.
 5. **Comparison handling**: For comparison questions, ALL compared entities are "target" role with "critical" importance
 6. **Multiple types**: Provide 2-3 possible type/subtype pairs per entity, ordered by likelihood
 
+**CRITICAL: Extract CONCRETE entities as search clues, NOT answer types**
+- ✅ EXTRACT: Proper nouns (Baltic Cup, David McClelland, Gabriel Barbosa), specific concepts (First World War), dates (1991), titles (Final Score)
+- ❌ DO NOT EXTRACT: Generic answer type words from "What/Which/Who" questions (country, city, university, person)
+- Example: "Which country participated in the 1991 Baltic Cup?" → Extract: "Baltic Cup", "1991" | Do NOT extract: "country"
+- Example: "What university employed David McClelland?" → Extract: "David McClelland" | Do NOT extract: "university"
+
 ---
 
 ## EXAMPLES
@@ -290,6 +296,99 @@ Return a JSON object with entities classified by role and importance.
       ],
       "role": "target",
       "importance": "critical"
+    }}
+  ]
+}}
+
+---
+
+### Example 6: Event with Date (Extract CONCRETE entities, NOT answer type)
+**Input Question:**
+"Which country refrained from participating in the 1991 Baltic Cup though it had participated in previous Baltic Cup competitions?"
+
+**WRONG Output (Do NOT do this):**
+{{
+  "entities": [
+    {{
+      "entity_name": "country",  // ❌ This is the ANSWER TYPE, not a search clue!
+      "possible_types": [...],
+      "role": "target",
+      "importance": "critical"
+    }}
+  ]
+}}
+
+**CORRECT Output:**
+{{
+  "entities": [
+    {{
+      "entity_name": "Baltic Cup",
+      "possible_types": [
+        {{"type": "Event", "subtype": "SportsTournament"}},
+        {{"type": "Event", "subtype": "Competition"}},
+        {{"type": "Concept", "subtype": "SportsEvent"}}
+      ],
+      "role": "target",
+      "importance": "critical"
+    }},
+    {{
+      "entity_name": "1991",
+      "possible_types": [
+        {{"type": "Concept", "subtype": "TimePoint"}},
+        {{"type": "Concept", "subtype": "Year"}}
+      ],
+      "role": "attribute",
+      "importance": "important"
+    }}
+  ]
+}}
+
+---
+
+### Example 7: Named Person Query (Extract the NAME, NOT the role)
+**Input Question:**
+"What university employed the psychologist that inspired David McClelland's thinking on power?"
+
+**WRONG Output (Do NOT do this):**
+{{
+  "entities": [
+    {{
+      "entity_name": "university",  // ❌ This is the ANSWER TYPE!
+      "possible_types": [...],
+      "role": "target",
+      "importance": "critical"
+    }},
+    {{
+      "entity_name": "psychologist",  // ❌ This is a descriptor, not a search clue!
+      "possible_types": [...],
+      "role": "attribute",
+      "importance": "important"
+    }}
+  ]
+}}
+
+**CORRECT Output:**
+{{
+  "entities": [
+    {{
+      "entity_name": "David McClelland",
+      "possible_types": [
+        {{"type": "Person", "subtype": "Scientist"}},
+        {{"type": "Person", "subtype": "Psychologist"}},
+        {{"type": "Person", "subtype": "Academic"}}
+      ],
+      "role": "target",
+      "importance": "critical"
+    }},
+    {{
+      "entity_name": "power",
+      "possible_types": [
+        {{"type": "Concept", "subtype": "PsychologicalConcept"}},
+        {{"type": "Concept", "subtype": "Theory"}},
+        {{"type": "Concept", "subtype": "AcademicField"}}
+      ],
+      "role": "attribute",
+      "importance": "important"
     }}
   ]
 }}

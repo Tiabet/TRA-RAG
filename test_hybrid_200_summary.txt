@@ -2,15 +2,15 @@
 HYBRID RETRIEVAL TEST - 200 QUERIES SUMMARY
 ================================================================================
 
-Execution Time: 509.11s (8.49 min)
-Processing Rate: 0.39 q/s
+Execution Time: 502.52s (8.38 min)
+Processing Rate: 0.40 q/s
 
 Retrieval Success: 200/200 (100.0%)
-Recall Rate: 378/489 (77.3%)
+Recall Rate: 383/489 (78.3%)
 
 Multiple Types Feature:
-  Average types per entity: 2.58
-  Entities using multiple types: 364
+  Average types per entity: 2.69
+  Entities using multiple types: 360
 
 ================================================================================
 SAMPLE RESULTS (First 10)
@@ -39,17 +39,17 @@ SAMPLE RESULTS (First 10)
 
 4. [4] Christopher de Haro provided the financial backing to what Portuguese explorer who organised the Spanish expedition to the East Indies from 1519 to 1522? 
    Type: bridge
-   Success: True | Passages: 5
+   Success: True | Passages: 4
    Supporting facts: ['Christopher de Haro', 'Ferdinand Magellan']
-   Retrieved (top 5): ['Christopher de Haro', 'Pedro Fernández de Velasco, 2nd Count of Haro', 'Luis Méndez de Haro', 'Lope Díaz II de Haro', 'Ferdinand Magellan']
+   Retrieved (top 5): ['Christopher de Haro', 'Pedro Fernández de Velasco, 2nd Count of Haro', 'Luis Méndez de Haro', 'Ferdinand Magellan']
    Matches: ['Christopher de Haro', 'Ferdinand Magellan'] (2/2)
 
 5. [5] The Roissy Airport connects to Paris and cities in what countries?
    Type: bridge
-   Success: True | Passages: 34
+   Success: True | Passages: 8
    Supporting facts: ['Aéroport Charles de Gaulle 2 TGV', 'Charles de Gaulle Airport']
-   Retrieved (top 5): ['Charles de Gaulle Airport', 'Mandalay International Airport', 'McCarran International Airport', 'Heathrow Airport', 'Chennai International Airport']
-   Matches: ['Aéroport Charles de Gaulle 2 TGV', 'Charles de Gaulle Airport'] (2/2)
+   Retrieved (top 5): ['Charles de Gaulle Airport', 'Heathrow Airport', 'Chennai International Airport', 'Dublin Airport', 'Athens International Airport']
+   Matches: ['Charles de Gaulle Airport'] (1/2)
 
 6. [6] Where was the movement that August Brancart published literature from centerd?
    Type: bridge
@@ -67,17 +67,17 @@ SAMPLE RESULTS (First 10)
 
 8. [8] Ross Pople worked with which English composer known for his opera "The Midsummer Marriage"?
    Type: bridge
-   Success: True | Passages: 5
+   Success: True | Passages: 4
    Supporting facts: ['Ross Pople', 'Michael Tippett', 'Michael Tippett']
-   Retrieved (top 5): ['London Festival Orchestra', 'Ross Pople', 'Frederic Clay', 'Michael Tippett', 'Julia Woolf']
+   Retrieved (top 5): ['London Festival Orchestra', 'Ross Pople', 'Michael Tippett', 'Julia Woolf']
    Matches: ['Ross Pople', 'Michael Tippett', 'Michael Tippett'] (3/3)
 
 9. [9] Which country refrained from participating in the 1991 Baltic Cup though it had participated in previous Baltic Cup competitions?
    Type: bridge
-   Success: True | Passages: 3
+   Success: True | Passages: 13
    Supporting facts: ['Estonia national football team 1991', 'Baltic Cup (football)']
-   Retrieved (top 5): ['List of companies of Malta', 'Malta', 'Republic of Entre Ríos']
-   Matches: [] (0/2)
+   Retrieved (top 5): ['1930 Baltic Cup', "Women's Baltic Cup", 'Baltic Cup (football)', '1995 Baltic Cup', '1937 Baltic Cup']
+   Matches: ['Estonia national football team 1991', 'Baltic Cup (football)'] (2/2)
 
 10. [10] What is a Southern European island country that was home to an airline pilot who flew the CASA-212-200 Aviocar before retiring in 2008 for health reasons? 
    Type: bridge

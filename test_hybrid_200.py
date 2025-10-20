@@ -92,18 +92,19 @@ async def process_single_query(
                 'stage2_final': stage2
             })
         
-        # Final passages - STORE ACTUAL PASSAGES
+        # Final passages - STORE ACTUAL PASSAGES WITH SOURCE INFO
         retrieved_passages = retrieval_result['retrieved_passages']
         result['num_passages'] = len(retrieved_passages)
         result['success'] = result['num_passages'] > 0
         
-        # Store passage titles and metadata
+        # Store passage titles and metadata INCLUDING source
         result['retrieved_passages'] = [
             {
                 'title': p['title'],
                 'type': p['metadata'].get('type', 'N/A'),
                 'subtype': p['metadata'].get('subtype', 'N/A'),
-                'doc_id': p.get('doc_id', 'N/A')
+                'doc_id': p.get('doc_id', 'N/A'),
+                'source': p.get('source', 'unknown')  # NEW: Track which stage contributed this passage
             }
             for p in retrieved_passages
         ]
@@ -221,7 +222,11 @@ async def main():
             'retrieved_supporting_facts': 0,
             'queries_with_full_recall': 0,
             'queries_with_partial_recall': 0,
-            'queries_with_no_recall': 0
+            'queries_with_no_recall': 0,
+            # NEW: Stage-specific recall
+            'stage1a_recall': 0,
+            'stage1b_recall': 0,
+            'both_recall': 0
         }
         
         for r in all_results:
@@ -229,12 +234,25 @@ async def main():
                 continue
             
             supporting_titles = [sf[0] for sf in r['supporting_facts']]
-            retrieved_titles = [p['title'] for p in r['retrieved_passages']]
+            retrieved_passages = r['retrieved_passages']
+            retrieved_titles = [p['title'] for p in retrieved_passages]
             
             recall_stats['total_supporting_facts'] += len(supporting_titles)
             
             matches = sum(1 for st in supporting_titles if st in retrieved_titles)
             recall_stats['retrieved_supporting_facts'] += matches
+            
+            # Track which stage found the supporting facts
+            for st in supporting_titles:
+                matching_passage = next((p for p in retrieved_passages if p['title'] == st), None)
+                if matching_passage:
+                    source = matching_passage.get('source', 'unknown')
+                    if source == 'stage1a_value':
+                        recall_stats['stage1a_recall'] += 1
+                    elif source == 'stage1b_type':
+                        recall_stats['stage1b_recall'] += 1
+                    elif source == 'both':
+                        recall_stats['both_recall'] += 1
             
             if matches == len(supporting_titles) and len(supporting_titles) > 0:
                 recall_stats['queries_with_full_recall'] += 1
@@ -305,6 +323,18 @@ async def main():
                 print(f"  Full recall (all supporting facts): {recall_stats['queries_with_full_recall']} ({recall_stats['queries_with_full_recall']/successful_queries*100:.1f}%)")
                 print(f"  Partial recall (some facts): {recall_stats['queries_with_partial_recall']} ({recall_stats['queries_with_partial_recall']/successful_queries*100:.1f}%)")
                 print(f"  No recall: {recall_stats['queries_with_no_recall']} ({recall_stats['queries_with_no_recall']/successful_queries*100:.1f}%)")
+            
+            print(f"\nStage-specific Recall (Which stage found the supporting facts):")
+            total_recalled = recall_stats['retrieved_supporting_facts']
+            if total_recalled > 0:
+                print(f"  Stage 1-A (Value only): {recall_stats['stage1a_recall']} ({recall_stats['stage1a_recall']/total_recalled*100:.1f}%)")
+                print(f"  Stage 1-B (Type only):  {recall_stats['stage1b_recall']} ({recall_stats['stage1b_recall']/total_recalled*100:.1f}%)")
+                print(f"  Both stages:            {recall_stats['both_recall']} ({recall_stats['both_recall']/total_recalled*100:.1f}%)")
+                
+                stage1a_contribution = (recall_stats['stage1a_recall'] + recall_stats['both_recall']) / total_recalled * 100
+                stage1b_contribution = (recall_stats['stage1b_recall'] + recall_stats['both_recall']) / total_recalled * 100
+                print(f"\n  Stage 1-A total contribution: {stage1a_contribution:.1f}%")
+                print(f"  Stage 1-B total contribution: {stage1b_contribution:.1f}%")
         
         # Question type analysis
         print("\n" + "="*80)

@@ -306,22 +306,29 @@ def stage2_merge_results(
     """
     Stage 2: Merge results from Stage 1-A and Stage 1-B.
     Remove duplicates based on title.
+    Add 'source' tag to track which stage contributed each passage.
     
     Args:
         value_matches: Results from value-based matching
         type_matches: Results from type-based LLM filtering
         
     Returns:
-        Merged list of unique passages
+        Merged list of unique passages with 'source' tag
     """
     # Use dict to avoid duplicates (by title)
     merged = {}
     
     for passage in value_matches:
+        passage['source'] = 'stage1a_value'
         merged[passage['title']] = passage
     
     for passage in type_matches:
-        merged[passage['title']] = passage
+        # If already exists from stage1a, mark as 'both'
+        if passage['title'] in merged:
+            merged[passage['title']]['source'] = 'both'
+        else:
+            passage['source'] = 'stage1b_type'
+            merged[passage['title']] = passage
     
     return list(merged.values())
 
