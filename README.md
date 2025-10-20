@@ -1,38 +1,54 @@
-# ChunkRAG v2 - Metadata-based RAG System
+# ChunkRAG v2 - Hybrid Metadata Retrieval System
 
-LLM 기반 메타데이터를 활용한 Multi-hop Question Answering 시스템
+**LLM 기반 메타데이터를 활용한 Multi-hop Question Answering 시스템**
 
-## 📁 프로젝트 구조
+[![Performance](https://img.shields.io/badge/Recall-78.3%25-brightgreen)]()
+[![Success Rate](https://img.shields.io/badge/Success-100%25-blue)]()
+[![Questions](https://img.shields.io/badge/Tested-200_queries-orange)]()
+
+## � 핵심 성능
+
+| 지표 | 결과 |
+|------|------|
+| **Overall Recall** | **78.3%** (383/489 supporting facts) |
+| **검색 성공률** | **100%** (200/200 queries) |
+| **No Recall** | **3.5%** (7/200 queries) |
+| **Full Recall** | 59.0% (118/200 queries) |
+| **처리 속도** | 0.40 queries/sec |
+
+## �📁 프로젝트 구조
 
 ```
 ChunkRAG_v2/
-├── Prompt/                              # LLM 프롬프트 정의
-│   ├── type_schema.py                   # 엔티티 타입 스키마
-│   ├── metadata_construction_prompt.py  # 메타데이터 생성 프롬프트
-│   ├── entity_extraction_prompt.py      # 엔티티 추출 프롬프트 (다중 타입)
-│   └── llm_filtering_prompt.py          # LLM semantic filtering 프롬프트
+├── 📂 Core System
+│   ├── hybrid_retrieval.py              # ⭐ Hybrid retrieval (Stage 1-A + 1-B + 2)
+│   ├── metadata_db.py                   # SQLite FTS5 DB 관리
+│   └── metadata_v2.db                   # 메타데이터 DB (5.3 MB)
 │
-├── build_metadata.py                    # 메타데이터 생성 (비동기)
-├── extract_entities_from_dataset.py     # 질문에서 엔티티 추출
-├── hybrid_retrieval.py                  # Hybrid retrieval (value + type matching)
-├── metadata_db.py                       # SQLite FTS5 DB 관리
+├── 📂 Prompts
+│   ├── Prompt/
+│   │   ├── type_schema.py               # 엔티티 타입 스키마 (9 types, 50+ subtypes)
+│   │   ├── entity_extraction_prompt.py  # ⭐ 엔티티 추출 (multiple types)
+│   │   ├── metadata_construction_prompt.py  # 메타데이터 생성
+│   │   └── llm_filtering_prompt.py      # LLM semantic filtering
 │
-├── test_hybrid_retrieval.py             # Hybrid retrieval 종합 테스트
-├── tests_archive/                       # 개발 과정 테스트/디버그 파일 보관
+├── 📂 Testing & Analysis
+│   ├── test_hybrid_200.py               # ⭐ 최종 테스트 스크립트 (200 queries)
+│   ├── analyze_hybrid_200.py            # 결과 분석 스크립트
+│   ├── test_hybrid_200_results.json     # 상세 결과 (946 KB)
+│   ├── test_hybrid_200_summary.txt      # 요약 통계
+│   └── tests_archive/                   # 개발 과정 아카이브
 │
-├── 2WikiMultihopQA/                     # 2WikiMultihopQA 데이터셋
-├── HotpotQA/                            # HotpotQA 데이터셋
-├── MuSiQue/                             # MuSiQue 데이터셋
+├── 📂 Documentation
+│   ├── PROJECT_SUMMARY.md               # ⭐ 프로젝트 종합 요약
+│   ├── stage_comparison_analysis.md     # Stage 1-A vs 1-B 비교 분석
+│   ├── no_recall_analysis.md            # No Recall 케이스 분석
+│   └── README.md                        # 이 문서
 │
-├── analyze/                             # 분석 및 테스트 스크립트
-│   ├── analyze_entity_results.py        # 엔티티 추출 결과 분석
-│   ├── test_entity_extraction.py        # 엔티티 추출 테스트
-│   ├── analyze_question_types.py        # 질문 타입 분포 분석
-│   └── ...                              # 기타 분석 스크립트
-│
-├── README.md                            # 메인 문서
-├── README_METADATA_BUILD.md             # 메타데이터 빌드 가이드
-└── README_DB.md                         # DB 스키마 및 사용법
+└── 📂 Datasets
+    ├── HotpotQA/                        # HotpotQA 200 샘플
+    ├── 2WikiMultihopQA/                 # 2WikiMultihopQA 샘플
+    └── MuSiQue/                         # MuSiQue 샘플
 ```
 
 ## 🚀 주요 기능
