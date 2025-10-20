@@ -51,158 +51,156 @@ ChunkRAG_v2/
     └── MuSiQue/                         # MuSiQue 샘플
 ```
 
-## 🚀 주요 기능
+## 🚀 빠른 시작
 
-### 1. 메타데이터 생성 (`build_metadata.py`)
-passage에서 구조화된 메타데이터를 LLM으로 추출합니다.
-
-```bash
-# 200개 샘플 처리
-python build_metadata.py -i HotpotQA/hotpotqa_sample_200.json --concurrency 20
-
-# 1000개 전체 데이터셋 처리
-python build_metadata.py -i HotpotQA/hotpot.jsonl --concurrency 20
-```
-
-**추출되는 메타데이터:**
-- Main Entities (이름, 타입, 서브타입, 관계)
-- Hierarchical Events (이벤트, 날짜, 참여자)
-- Attributes (숫자 정보, 시간 정보, 통계)
-- Relations (엔티티 간 관계 그래프)
-
-### 2. 엔티티 추출 (`extract_entities_from_dataset.py`)
-질문에서 시작 엔티티를 추출합니다.
+### 1. 환경 설정
 
 ```bash
-# 질문에서 엔티티 추출
-python extract_entities_from_dataset.py -i HotpotQA/hotpotqa_sample_200.json --concurrency 20
-```
-
-**지원 기능:**
-- 단일 엔티티 추출 (bridge 질문)
-- 다중 엔티티 추출 (comparison 질문)
-- 엔티티 타입 자동 분류
-
-## 📊 성능 결과
-
-### HotpotQA 200 샘플 테스트
-
-**메타데이터 생성:**
-- 성공률: 100% (1,994/1,994 passages)
-- 처리 시간: 18:33 (1.79 it/s)
-- 동시 처리: 20개
-
-**엔티티 추출:**
-- 성공률: 100% (200/200 questions)
-- 처리 시간: 39초 (5.05 it/s)
-- Bridge 질문: 평균 1.27개 엔티티
-- Comparison 질문: 평균 1.98개 엔티티
-
-## 🛠️ 환경 설정
-
-### 필수 패키지
-```bash
+# 필수 패키지 설치
 pip install openai python-dotenv tqdm
-```
 
-### 환경 변수 (.env)
-```
+# 환경 변수 설정 (.env)
 ALICE_OPENAI_KEY=your_api_key_here
 ALICE_CHAT_URL=https://your-api-endpoint/v1
 ```
 
-## 📈 데이터셋 정보
-
-| Dataset | Questions | Passages | Question Types |
-|---------|-----------|----------|----------------|
-| HotpotQA | 1,000 | 9,981 | Bridge (79%), Comparison (21%) |
-| 2WikiMultihopQA | 1,000 | 10,000 | Compositional (46%), Comparison (25%), Bridge_comparison (19%), Inference (11%) |
-| MuSiQue | 1,000 | 19,990 | 2-hop (50%), 3-hop (34%), 4-hop (17%) |
-| **Total** | **3,000** | **39,971** | Multi-hop QA |
-
-## 💡 사용 예시
-
-### 메타데이터 생성 + 엔티티 추출 파이프라인
+### 2. 테스트 실행
 
 ```bash
-# 1. 메타데이터 생성
-python build_metadata.py -i HotpotQA/hotpot.jsonl --concurrency 20
+# Hybrid retrieval 테스트 (200 queries)
+python test_hybrid_200.py
 
-# 2. 엔티티 추출
-python extract_entities_from_dataset.py -i HotpotQA/hotpot.jsonl --concurrency 20
-
-# 결과 파일:
-# - HotpotQA/hotpot_metadata.json     (passage 메타데이터)
-# - HotpotQA/hotpot_entities.json     (질문 엔티티)
+# 결과 분석
+python analyze_hybrid_200.py
 ```
 
-## 🔍 Hybrid Retrieval System
-
-### 다중 타입 추출 (Multiple Types per Entity)
-
-**문제**: 단일 타입 추출 시 LLM과 DB 스키마 불일치로 매칭 실패
-- 예: LLM이 "Concept/AcademicField" 추출 → DB에는 "Concept/SocialSystem"만 존재
-
-**해결**: 엔티티당 2-3개의 `possible_types` 추출
+### 3. 사용 예시
 
 ```python
-# 이전 (단일 타입)
-{
-  "entity_name": "education system",
-  "type": "Concept",
-  "subtype": "AcademicField"  # DB에 없으면 매칭 실패!
-}
+from hybrid_retrieval import initialize_llm_client, retrieve_for_query
+from metadata_db import MetadataDB
 
-# 현재 (다중 타입)
-{
-  "entity_name": "education system",
-  "possible_types": [
-    {"type": "Concept", "subtype": "EducationalSystem"},  # 4개 매칭
-    {"type": "Concept", "subtype": "SocialSystem"},       # 19개 매칭
-    {"type": "Concept", "subtype": "AcademicField"}       # 0개 (괜찮음)
-  ]
-}
+# 초기화
+client = initialize_llm_client()
+db = MetadataDB('metadata_v2.db')
+
+# 검색
+query = "Who proposed free education plan in Argentina?"
+result = await retrieve_for_query(client, db, query, use_fts=True)
+
+# 결과
+print(f"Retrieved: {len(result['retrieved_passages'])} passages")
+for passage in result['retrieved_passages']:
+    print(f"  - {passage['title']} [{passage.get('source', 'unknown')}]")
 ```
+
+## 🏗️ 시스템 아키텍처
 
 ### Hybrid Retrieval Pipeline
 
 ```
-Query → Entity 추출
-         ↓
-┌─────────────────────────────────────┐
-│ Stage 1-A: Value Matching          │
-│ - Entity name FTS 검색              │
-│ - 모든 metadata 값에서 검색          │
-└─────────────────────────────────────┘
-         ↓
-┌─────────────────────────────────────┐
-│ Stage 1-B: Type Filtering           │
-│ 1. 여러 possible_types로 DB 검색     │
-│    (Type 1 + Type 2 + Type 3...)   │
-│ 2. LLM semantic filtering          │
-└─────────────────────────────────────┘
-         ↓
-┌─────────────────────────────────────┐
-│ Stage 2: Merge                      │
-│ - Value + Type 결과 병합             │
-│ - Title 기준 중복 제거               │
-└─────────────────────────────────────┘
+Query
+  ↓
+┌─────────────────────────────────────────────────┐
+│ Entity Extraction (gpt-4o-mini, temp=0.1)       │
+│ - 엔티티 추출 + Role 분류                        │
+│ - 각 엔티티당 2-3개 possible types              │
+└─────────────────────────────────────────────────┘
+  ↓
+┌─────────────────────────────────────────────────┐
+│ Stage 1-A: Value/FTS Matching                   │
+│ - SQLite FTS5로 엔티티 이름 검색                 │
+│ - 평균 16개 passages 검색                        │
+│ - Precision: 3.62% | Recall 기여: 75.7%         │
+└─────────────────────────────────────────────────┘
+  ↓
+┌─────────────────────────────────────────────────┐
+│ Stage 1-B: Type Filtering + LLM Filter          │
+│ 1. Type DB query (multiple types 시도)          │
+│    → 평균 109개 candidates                       │
+│ 2. LLM Title Filtering (semantic matching)      │
+│    → 96.5% 제거, 평균 3.8개만 통과               │
+│ - Precision: 12.09% | Recall 기여: 69.7%        │
+└─────────────────────────────────────────────────┘
+  ↓
+┌─────────────────────────────────────────────────┐
+│ Stage 2: Merge & Deduplicate                    │
+│ - Source tagging (stage1a/stage1b/both)         │
+│ - 45.4%가 Both = High Confidence                │
+│ - 최종 평균 18개 passages                        │
+└─────────────────────────────────────────────────┘
+  ↓
+Retrieved Passages
 ```
 
-### 성능 개선
+### Multiple Types System
 
-| 메트릭 | 이전 (단일 타입) | 현재 (다중 타입) | 개선율 |
-|--------|-----------------|-----------------|--------|
-| Types per entity | 1개 | 2-3개 | 200-300% |
-| Type matching (Argentina education) | 0개 | 23개 | ∞ |
-| 정답 발견 | 실패 | 성공 (#1위) | ✅ |
-
-### 테스트
-
-```bash
-# Hybrid retrieval 종합 테스트 (3가지 쿼리)
-python test_hybrid_retrieval.py
+**문제**: 단일 타입 추출 시 LLM-DB 스키마 불일치
+```python
+# ❌ 이전 (단일 타입)
+{
+  "entity_name": "education",
+  "type": "Concept",
+  "subtype": "AcademicField"  # DB에 없으면 0개 매칭!
+}
 ```
+
+**해결**: 엔티티당 2-3개 possible types
+```python
+# ✅ 현재 (다중 타입)
+{
+  "entity_name": "education",
+  "possible_types": [
+    {"type": "Concept", "subtype": "SocialSystem"},      # 19개 매칭
+    {"type": "Concept", "subtype": "EducationalSystem"}, # 4개 매칭
+    {"type": "Concept", "subtype": "AcademicField"}      # 0개 (괜찮음)
+  ]
+}
+```
+
+**효과**: 평균 2.69 types/entity → Type mismatch 문제 해결
+
+## 📈 성능 분석
+
+### Stage별 기여도
+
+```
+Supporting Facts 383개 중:
+
+┌──────────────────────────────────────────┐
+│ Stage 1-A만:    116 facts (30.3%)       │  ← Value로만 찾음
+│ Stage 1-B만:     93 facts (24.3%)       │  ← Type으로만 찾음
+│ Both:           174 facts (45.4%)       │  ← 양쪽 다 (고신뢰!)
+├──────────────────────────────────────────┤
+│ Stage 1-A 총:   290 facts (75.7%)       │  ← Core engine
+│ Stage 1-B 총:   267 facts (69.7%)       │  ← Essential complement
+│ Hybrid:         383 facts (78.3%)       │  ← Best performance
+└──────────────────────────────────────────┘
+```
+
+### Question Type별 성능
+
+| Type | Total | Full Recall | Partial | No Recall |
+|------|-------|-------------|---------|-----------|
+| **Comparison** | 42 | **97.6%** (41) | 2.4% (1) | 0% |
+| **Bridge** | 158 | 50.0% (79) | 44.3% (70) | 5.7% (9) |
+
+**인사이트**: Comparison 질문이 Bridge보다 훨씬 쉬움
+
+### Stage별 특성
+
+| 지표 | Stage 1-A (Value/FTS) | Stage 1-B (Type + LLM) |
+|------|---------------------|---------------------|
+| **속도** | ⭐⭐⭐⭐⭐ 매우 빠름 | ⭐⭐ 느림 |
+| **Recall** | ⭐⭐⭐⭐⭐ 75.7% | ⭐⭐⭐⭐ 69.7% |
+| **Precision** | ⭐ 3.62% | ⭐⭐⭐ 12.09% (3.3배!) |
+| **독립 기여** | 30.3% | 24.3% |
+| **비용** | ⭐⭐⭐⭐⭐ 무료 | ⭐⭐ LLM API |
+
+**결론**: 
+- Stage 1-A가 더 중요하지만 (75.7% vs 69.7%)
+- Stage 1-B 없이는 불완전 (각각 32%의 쿼리에서 독립적으로 필요)
+- **Hybrid가 최선** (78.3% Recall)
 
 ## 🔍 엔티티 타입 스키마
 

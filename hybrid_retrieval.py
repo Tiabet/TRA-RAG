@@ -141,27 +141,34 @@ async def extract_entities_from_query(client: AsyncOpenAI, query: str) -> Dict:
         }
 
 
-def stage1a_value_matching(
+async def stage1a_value_matching(
+    client: AsyncOpenAI,
     db: MetadataDB,
+    query: str,
     entity_name: str,
     entity_type: Optional[str] = None,
     entity_subtype: Optional[str] = None,
-    use_fts: bool = True
-) -> List[Dict]:
+    use_fts: bool = True,
+    apply_llm_filter: bool = True
+) -> Tuple[List[Dict], Dict]:
     """
-    Stage 1-A: Value-based entity matching.
-    Search for entity_name in all metadata values using FTS.
+    Stage 1-A: Value-based entity matching with optional LLM filtering.
+    Search for entity_name in all metadata values using FTS, then optionally filter with LLM.
     
     Args:
+        client: AsyncOpenAI client
         db: MetadataDB instance
+        query: Original query (for LLM filtering)
         entity_name: Entity name to search for
         entity_type: Optional entity type (used for type fallback)
         entity_subtype: Optional entity subtype
         use_fts: Use FTS for search
+        apply_llm_filter: If True, apply LLM title filtering (NEW!)
         
     Returns:
-        List of matched passages
+        Tuple of (matched_passages, filter_info)
     """
+    # Step 1: Get initial matches from DB
     if use_fts:
         matches = db.search_by_entity_fts(entity_name, entity_type, entity_subtype)
     else:
@@ -174,7 +181,77 @@ def stage1a_value_matching(
         else:
             matches = db.search_by_entity(entity_name, None, None, search_title_only=False)
     
-    return matches
+    initial_count = len(matches)
+    
+    # Step 2: Apply LLM filtering if requested
+    if apply_llm_filter and matches:
+        # Extract titles
+        candidate_titles = [m['title'] for m in matches]
+        
+        # Format prompt for LLM
+        prompt = TITLE_FILTERING_PROMPT.replace('{{QUERY}}', query)
+        prompt = prompt.replace('{{ENTITY_NAME}}', entity_name)
+        prompt = prompt.replace('{{ENTITY_TYPE}}', entity_type or 'Unknown')
+        prompt = prompt.replace('{{ENTITY_SUBTYPE}}', entity_subtype or 'Unknown')
+        prompt = prompt.replace('{{COUNT}}', str(len(candidate_titles)))
+        prompt = prompt.replace('{{CANDIDATE_TITLES}}', json.dumps(candidate_titles, indent=2, ensure_ascii=False))
+        
+        try:
+            response = await client.chat.completions.create(
+                model="openai/gpt-4o-mini",
+                messages=[
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.1,
+                max_tokens=2048
+            )
+            
+            result_text = response.choices[0].message.content.strip()
+            
+            # Parse JSON response
+            if result_text.startswith('```json'):
+                result_text = result_text[7:]
+            if result_text.startswith('```'):
+                result_text = result_text[3:]
+            if result_text.endswith('```'):
+                result_text = result_text[:-3]
+            result_text = result_text.strip()
+            
+            result = json.loads(result_text)
+            relevant_titles = set(result.get('relevant_titles', []))
+            
+            # Filter matches by relevant titles
+            filtered_matches = [m for m in matches if m['title'] in relevant_titles]
+            
+            filter_info = {
+                'stage': '1-A',
+                'initial_matches': initial_count,
+                'llm_filtered': len(filtered_matches),
+                'reasoning': result.get('reasoning', '')
+            }
+            
+            return filtered_matches, filter_info
+            
+        except Exception as e:
+            # Fallback: return all matches if LLM fails
+            filter_info = {
+                'stage': '1-A',
+                'initial_matches': initial_count,
+                'llm_filtered': initial_count,
+                'error': str(e),
+                'fallback': True
+            }
+            return matches, filter_info
+    
+    # No LLM filtering applied
+    filter_info = {
+        'stage': '1-A',
+        'initial_matches': initial_count,
+        'llm_filtered': initial_count,
+        'llm_filter_applied': False
+    }
+    
+    return matches, filter_info
 
 
 async def stage1b_type_filtering(
@@ -338,13 +415,14 @@ async def retrieve_for_entity_hybrid(
     db: MetadataDB,
     query: str,
     entity: Dict,
-    use_fts: bool = True
+    use_fts: bool = True,
+    apply_llm_filter_stage1a: bool = True
 ) -> Tuple[List[Dict], Dict]:
     """
     Hybrid retrieval for a single entity.
     
     Pipeline:
-      1-A: Value-based matching
+      1-A: Value-based matching (+ optional LLM filtering)
       1-B: Type-based LLM filtering (tries multiple type/subtype combinations)
       2: Merge results
     
@@ -354,6 +432,7 @@ async def retrieve_for_entity_hybrid(
         query: Original query
         entity: Entity dict with 'entity_name', 'possible_types' (list of {type, subtype})
         use_fts: Use FTS for value matching
+        apply_llm_filter_stage1a: If True, apply LLM title filtering to Stage 1-A (NEW!)
         
     Returns:
         Tuple of (final_passages, retrieval_info)
@@ -373,8 +452,10 @@ async def retrieve_for_entity_hybrid(
     entity_type = primary_type.get('type')
     entity_subtype = primary_type.get('subtype')
     
-    # Run Stage 1-A (sync) and 1-B (async) - Stage 1-A runs first due to SQLite thread limitation
-    value_matches = stage1a_value_matching(db, entity_name, entity_type, entity_subtype, use_fts)
+    # Run Stage 1-A (now async with LLM filtering) and 1-B in parallel
+    value_matches, value_info = await stage1a_value_matching(
+        client, db, query, entity_name, entity_type, entity_subtype, use_fts, apply_llm_filter_stage1a
+    )
     type_matches, type_info = await stage1b_type_filtering(client, db, query, entity_name, possible_types)
     
     # Stage 2: Merge
@@ -384,7 +465,7 @@ async def retrieve_for_entity_hybrid(
         'entity_name': entity_name,
         'entity_type': entity_type,
         'entity_subtype': entity_subtype,
-        'stage1a_value_matches': len(value_matches),
+        'stage1a_value_info': value_info,
         'stage1b_type_info': type_info,
         'stage2_final': len(final_passages)
     }
@@ -396,7 +477,8 @@ async def retrieve_for_query(
     client: AsyncOpenAI,
     db: MetadataDB,
     query: str,
-    use_fts: bool = True
+    use_fts: bool = True,
+    apply_llm_filter_stage1a: bool = True
 ) -> Dict:
     """
     Main hybrid retrieval function for a query with role-based entity processing.
@@ -406,6 +488,7 @@ async def retrieve_for_query(
         db: MetadataDB instance
         query: The original query
         use_fts: If True, use FTS for faster search
+        apply_llm_filter_stage1a: If True, apply LLM title filtering to Stage 1-A (NEW!)
         
     Returns:
         Dict with extracted entities, retrieved passages and info
@@ -442,7 +525,7 @@ async def retrieve_for_query(
     
     if len(critical_targets) > 1:
         # Comparison question: retrieve all targets in parallel
-        tasks = [retrieve_for_entity_hybrid(client, db, query, e, use_fts) for e in critical_targets]
+        tasks = [retrieve_for_entity_hybrid(client, db, query, e, use_fts, apply_llm_filter_stage1a) for e in critical_targets]
         results = await asyncio.gather(*tasks)
         
         for passages, info in results:
@@ -453,7 +536,7 @@ async def retrieve_for_query(
     
     elif len(critical_targets) == 1:
         # Single target question
-        passages, info = await retrieve_for_entity_hybrid(client, db, query, critical_targets[0], use_fts)
+        passages, info = await retrieve_for_entity_hybrid(client, db, query, critical_targets[0], use_fts, apply_llm_filter_stage1a)
         entity_results.append(info)
         all_passages.extend(passages)
     
@@ -461,7 +544,7 @@ async def retrieve_for_query(
     if len(all_passages) < 2:
         important_targets = [e for e in target_entities if e.get('importance') == 'important']
         for entity in important_targets:
-            passages, info = await retrieve_for_entity_hybrid(client, db, query, entity, use_fts)
+            passages, info = await retrieve_for_entity_hybrid(client, db, query, entity, use_fts, apply_llm_filter_stage1a)
             entity_results.append(info)
             for passage in passages:
                 if not any(p['title'] == passage['title'] for p in all_passages):
@@ -470,7 +553,7 @@ async def retrieve_for_query(
     # Strategy 3: If still insufficient, try attribute entities
     if len(all_passages) < 2 and attribute_entities:
         for entity in attribute_entities[:2]:  # Limit to top 2 attributes
-            passages, info = await retrieve_for_entity_hybrid(client, db, query, entity, use_fts)
+            passages, info = await retrieve_for_entity_hybrid(client, db, query, entity, use_fts, apply_llm_filter_stage1a)
             entity_results.append(info)
             for passage in passages:
                 if not any(p['title'] == passage['title'] for p in all_passages):
@@ -479,7 +562,7 @@ async def retrieve_for_query(
     # Strategy 4: Last resort - context entities
     if len(all_passages) < 1 and context_entities:
         for entity in context_entities[:1]:  # Only use first context
-            passages, info = await retrieve_for_entity_hybrid(client, db, query, entity, use_fts)
+            passages, info = await retrieve_for_entity_hybrid(client, db, query, entity, use_fts, apply_llm_filter_stage1a)
             entity_results.append(info)
             for passage in passages:
                 if not any(p['title'] == passage['title'] for p in all_passages):
@@ -561,8 +644,17 @@ if __name__ == "__main__":
             
             for ent_info in result['retrieval_info']['entity_results']:
                 print(f"\n  Entity: {ent_info['entity_name']}")
-                print(f"    Stage 1-A (Value): {ent_info['stage1a_value_matches']} passages")
                 
+                # Stage 1-A info (now with LLM filtering)
+                value_info = ent_info['stage1a_value_info']
+                if value_info.get('llm_filter_applied', True):
+                    print(f"    Stage 1-A (Value): {value_info['initial_matches']} initial → {value_info['llm_filtered']} after LLM")
+                    if 'reasoning' in value_info and value_info['reasoning']:
+                        print(f"      Reasoning: {value_info['reasoning'][:100]}...")
+                else:
+                    print(f"    Stage 1-A (Value): {value_info['initial_matches']} passages (no LLM filter)")
+                
+                # Stage 1-B info
                 type_info = ent_info['stage1b_type_info']
                 if type_info.get('skipped'):
                     print(f"    Stage 1-B (Type): Skipped (no type)")
