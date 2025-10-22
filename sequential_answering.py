@@ -368,6 +368,134 @@ async def answer_subquestion(
         }
 
 
+async def answer_subquestions_sequential(
+    client: AsyncOpenAI,
+    db: MetadataDB,
+    decomposition: QueryDecomposition,
+    use_fts: bool = True,
+    apply_llm_filter_stage1a: bool = True,
+    verbose: bool = True
+) -> Dict:
+    """
+    Answer all sub-questions with batch-aware parallel execution.
+    
+    - Independent sub-questions (same batch) run in parallel
+    - Dependent sub-questions run sequentially (different batches)
+    
+    Args:
+        client: AsyncOpenAI client
+        db: MetadataDB instance
+        decomposition: QueryDecomposition object
+        use_fts: Use FTS for retrieval
+        apply_llm_filter_stage1a: Apply LLM filtering to Stage 1-A
+        verbose: Print progress
+        
+    Returns:
+        Dict with 'success', 'results', optional 'error'
+    """
+    from query_decomposition import get_execution_order
+    
+    try:
+        # Get execution order (batches of independent SQs)
+        batches = get_execution_order(decomposition)
+        
+        if verbose:
+            print(f"\nExecution Plan: {len(batches)} batch(es)")
+            for i, batch in enumerate(batches, 1):
+                parallel = " (parallel)" if len(batch) > 1 else ""
+                print(f"  Batch {i}: {', '.join(batch)}{parallel}")
+        
+        all_results = []
+        
+        # Process each batch
+        for batch_idx, batch in enumerate(batches, 1):
+            if verbose:
+                print(f"\n{'='*80}")
+                print(f"Batch {batch_idx}/{len(batches)}: Processing {len(batch)} sub-question(s)")
+                print(f"{'='*80}")
+            
+            if len(batch) == 1:
+                # Sequential: Single sub-question
+                sq_id = batch[0]
+                sq = decomposition.get_subquestion(sq_id)
+                
+                if verbose:
+                    print(f"\n{'-'*80}")
+                    print(f"Answering {sq.id}: {sq.question}")
+                    print(f"{'-'*80}")
+                
+                result = await answer_subquestion(
+                    client, db, sq, decomposition,
+                    use_fts, apply_llm_filter_stage1a
+                )
+                
+                if result['success']:
+                    if verbose:
+                        print(f"✅ Answer: {result['answer']}")
+                        print(f"   Entities: {len(result.get('entities', []))}, Passages: {len(result.get('passages', []))}")
+                else:
+                    if verbose:
+                        print(f"❌ Error: {result.get('error', 'Unknown error')}")
+                
+                all_results.append(result)
+            
+            else:
+                # Parallel: Multiple independent sub-questions
+                if verbose:
+                    print(f"\n🚀 Parallel execution of {len(batch)} sub-questions...")
+                
+                tasks = []
+                for sq_id in batch:
+                    sq = decomposition.get_subquestion(sq_id)
+                    task = answer_subquestion(
+                        client, db, sq, decomposition,
+                        use_fts, apply_llm_filter_stage1a
+                    )
+                    tasks.append((sq_id, task))
+                
+                # Execute all tasks in parallel
+                results = await asyncio.gather(*[task for _, task in tasks], return_exceptions=True)
+                
+                # Process results
+                for (sq_id, _), result in zip(tasks, results):
+                    sq = decomposition.get_subquestion(sq_id)
+                    
+                    if verbose:
+                        print(f"\n{'-'*80}")
+                        print(f"{sq.id}: {sq.question}")
+                        print(f"{'-'*80}")
+                    
+                    if isinstance(result, Exception):
+                        error_result = {
+                            'success': False,
+                            'error': str(result)
+                        }
+                        if verbose:
+                            print(f"❌ Error: {result}")
+                        all_results.append(error_result)
+                    elif result['success']:
+                        if verbose:
+                            print(f"✅ Answer: {result['answer']}")
+                            print(f"   Entities: {len(result.get('entities', []))}, Passages: {len(result.get('passages', []))}")
+                        all_results.append(result)
+                    else:
+                        if verbose:
+                            print(f"❌ Error: {result.get('error', 'Unknown error')}")
+                        all_results.append(result)
+        
+        return {
+            'success': True,
+            'results': all_results,
+            'num_batches': len(batches)
+        }
+        
+    except Exception as e:
+        return {
+            'success': False,
+            'error': str(e)
+        }
+
+
 async def synthesize_final_answer(
     client: AsyncOpenAI,
     decomposition: QueryDecomposition
@@ -477,28 +605,21 @@ if __name__ == "__main__":
         for sq in decomposition.subquestions:
             print(f"  {sq.id}: {sq.question}")
         
-        # Step 2: Answer each sub-question sequentially
+        # Step 2: Answer sub-questions (with batch-aware parallel execution)
         print(f"\n{'='*80}")
-        print("Step 2: Sequential Answering...")
-        print(f"{'='*80}\n")
+        print("Step 2: Answering Sub-Questions (Batch-aware Parallel)...")
+        print(f"{'='*80}")
         
-        for sq in decomposition.subquestions:
-            print(f"\n{'-'*80}")
-            print(f"Answering {sq.id}: {sq.question}")
-            print(f"{'-'*80}")
-            
-            result = await answer_subquestion(
-                client, db, sq, decomposition,
-                use_fts=True,
-                apply_llm_filter_stage1a=True
-            )
-            
-            if result['success']:
-                print(f"✅ Answer: {result['answer']}")
-                print(f"   Entities extracted: {len(result['entities'])}")
-                print(f"   Passages retrieved: {len(result['passages'])}")
-            else:
-                print(f"❌ Error: {result['error']}")
+        answering_result = await answer_subquestions_sequential(
+            client, db, decomposition,
+            use_fts=True,
+            apply_llm_filter_stage1a=True,
+            verbose=True
+        )
+        
+        if not answering_result['success']:
+            print(f"\n❌ Answering failed: {answering_result['error']}")
+            return
         
         # Step 3: Synthesize final answer
         print(f"\n{'='*80}")
