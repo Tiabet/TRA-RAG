@@ -17,6 +17,7 @@ from dotenv import load_dotenv
 
 from metadata_db import MetadataDB
 from Prompt.entity_extraction_prompt import ENTITY_EXTRACTION_PROMPT
+from Prompt.title_filtering_prompt import TITLE_FILTERING_PROMPT
 
 # Load environment variables
 load_dotenv()
@@ -34,62 +35,6 @@ def initialize_llm_client():
         api_key=api_key,
         base_url=base_url
     )
-
-
-# LLM Title Filtering Prompt
-TITLE_FILTERING_PROMPT = """You are an expert at identifying relevant passages for answering questions.
-
-Given:
-- A QUERY
-- An ENTITY extracted from the query (with type/subtype)
-- A list of CANDIDATE TITLES (from passages with matching type/subtype)
-
-Your task: Filter the candidate titles to keep only those that are RELEVANT to answering the query about the entity.
-
-FILTERING CRITERIA:
-1. **Direct match**: Title is about the entity or directly related concept
-2. **Contextual relevance**: Title provides information needed to answer the query
-3. **Remove unrelated**: Filter out titles that share the same type but are unrelated
-
-**IMPORTANT**: Be INCLUSIVE rather than exclusive. If there's reasonable chance a title could help answer the query, keep it.
-
-Examples of what to KEEP:
-- Query: "airport named after Pat McCarran" → Keep: "McCarran International Airport", "Henderson Executive Airport" (reliever airport)
-- Query: "2015 NHL Entry Draft" → Keep: "2015", "NHL Entry Draft", "National Hockey League" (fragments that together answer)
-- Query: "ghost man slang" → Keep: "Gweilo", "Ghosts (2006 film)" (film about the slang term)
-
-Examples of what to FILTER OUT:
-- Query: "Argentine education" → Remove: "Education in Morocco", "Education in Greece" (same type, different country)
-- Query: "Stephen Graham 2006 film" → Remove: "Stephen Wade" (same name, wrong person)
-
----
-
-**INPUT:**
-
-Query: {{QUERY}}
-
-Entity: {{ENTITY_NAME}}
-Type: {{ENTITY_TYPE}}
-Subtype: {{ENTITY_SUBTYPE}}
-
-Candidate Titles ({{COUNT}} total):
-{{CANDIDATE_TITLES}}
-
----
-
-**OUTPUT FORMAT (JSON only):**
-
-{
-  "relevant_titles": ["title1", "title2", ...],
-  "filtered_out_titles": ["title3", "title4", ...],
-  "reasoning": "Brief explanation of filtering decisions"
-}
-
-**Rules:**
-- Include a title in "relevant_titles" if it could help answer the query
-- Be inclusive - when in doubt, keep it
-- Provide concise reasoning for major filtering decisions
-"""
 
 
 async def extract_entities_from_query(client: AsyncOpenAI, query: str) -> Dict:
@@ -185,16 +130,42 @@ async def stage1a_value_matching(
     
     # Step 2: Apply LLM filtering if requested
     if apply_llm_filter and matches:
-        # Extract titles
-        candidate_titles = [m['title'] for m in matches]
+        # Prepare candidates with title + snippet
+        candidates_with_snippets = []
+        for m in matches:
+            # Extract key attributes for snippet (first 150 chars of metadata)
+            metadata_str = m.get('metadata', '')
+            if isinstance(metadata_str, str):
+                try:
+                    metadata = json.loads(metadata_str)
+                except:
+                    metadata = {}
+            else:
+                metadata = metadata_str or {}
+            
+            # Build snippet from key fields
+            snippet_parts = []
+            for key in ['description', 'main_entity', 'attributes', 'events']:
+                if key in metadata and metadata[key]:
+                    value = str(metadata[key])[:100]  # First 100 chars
+                    snippet_parts.append(f"{key}: {value}")
+            
+            snippet = '; '.join(snippet_parts[:2]) if snippet_parts else 'No metadata'  # Max 2 fields
+            
+            candidates_with_snippets.append({
+                'title': m['title'],
+                'type': m.get('type', 'Unknown'),
+                'subtype': m.get('subtype', 'Unknown'),
+                'snippet': snippet[:150]  # Max 150 chars total
+            })
         
         # Format prompt for LLM
         prompt = TITLE_FILTERING_PROMPT.replace('{{QUERY}}', query)
         prompt = prompt.replace('{{ENTITY_NAME}}', entity_name)
         prompt = prompt.replace('{{ENTITY_TYPE}}', entity_type or 'Unknown')
         prompt = prompt.replace('{{ENTITY_SUBTYPE}}', entity_subtype or 'Unknown')
-        prompt = prompt.replace('{{COUNT}}', str(len(candidate_titles)))
-        prompt = prompt.replace('{{CANDIDATE_TITLES}}', json.dumps(candidate_titles, indent=2, ensure_ascii=False))
+        prompt = prompt.replace('{{COUNT}}', str(len(candidates_with_snippets)))
+        prompt = prompt.replace('{{CANDIDATES}}', json.dumps(candidates_with_snippets, indent=2, ensure_ascii=False))
         
         try:
             response = await client.chat.completions.create(
@@ -306,8 +277,34 @@ async def stage1b_type_filtering(
             'skipped': len(tried_types) == 0
         }
     
-    # Extract titles only (no full metadata)
-    candidate_titles = [c['title'] for c in all_candidates]
+    # Prepare candidates with title + snippet
+    candidates_with_snippets = []
+    for c in all_candidates:
+        # Extract key attributes for snippet (first 150 chars of metadata)
+        metadata_str = c.get('metadata', '')
+        if isinstance(metadata_str, str):
+            try:
+                metadata = json.loads(metadata_str)
+            except:
+                metadata = {}
+        else:
+            metadata = metadata_str or {}
+        
+        # Build snippet from key fields
+        snippet_parts = []
+        for key in ['description', 'main_entity', 'attributes', 'events']:
+            if key in metadata and metadata[key]:
+                value = str(metadata[key])[:100]  # First 100 chars
+                snippet_parts.append(f"{key}: {value}")
+        
+        snippet = '; '.join(snippet_parts[:2]) if snippet_parts else 'No metadata'  # Max 2 fields
+        
+        candidates_with_snippets.append({
+            'title': c['title'],
+            'type': c.get('type', 'Unknown'),
+            'subtype': c.get('subtype', 'Unknown'),
+            'snippet': snippet[:150]  # Max 150 chars total
+        })
     
     # Format prompt for LLM (use first type as primary)
     primary_type = possible_types[0] if possible_types else {}
@@ -315,8 +312,8 @@ async def stage1b_type_filtering(
     prompt = prompt.replace('{{ENTITY_NAME}}', entity_name)
     prompt = prompt.replace('{{ENTITY_TYPE}}', primary_type.get('type', 'Unknown'))
     prompt = prompt.replace('{{ENTITY_SUBTYPE}}', primary_type.get('subtype', 'Unknown'))
-    prompt = prompt.replace('{{COUNT}}', str(len(candidate_titles)))
-    prompt = prompt.replace('{{CANDIDATE_TITLES}}', json.dumps(candidate_titles, indent=2, ensure_ascii=False))
+    prompt = prompt.replace('{{COUNT}}', str(len(candidates_with_snippets)))
+    prompt = prompt.replace('{{CANDIDATES}}', json.dumps(candidates_with_snippets, indent=2, ensure_ascii=False))
     
     try:
         response = await client.chat.completions.create(
