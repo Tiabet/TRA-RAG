@@ -1,5 +1,6 @@
 """
 Test if transitive dependency fix resolves the SQ3 zero-passage problem.
+Uses the actual question from results and performs full LLM-based decomposition.
 """
 
 import asyncio
@@ -8,10 +9,14 @@ import json
 from dotenv import load_dotenv
 from openai import AsyncOpenAI
 from metadata_db import MetadataDB
-from sequential_answering import answer_subquestions_sequential
-from query_decomposition import QueryDecomposition, SubQuestion
+from query_decomposition import decompose_query
+from sequential_answering import answer_subquestions_sequential, synthesize_final_answer
+from llm_logger import init_logger, finalize_log
 
 load_dotenv()
+
+# Initialize LLM logger
+logger = init_logger()
 
 # Initialize
 client = AsyncOpenAI(
@@ -21,51 +26,57 @@ client = AsyncOpenAI(
 db = MetadataDB('metadata_v2.db')
 
 async def test_transitive_dependency():
-    """Test the specific case that was failing."""
+    """Test the specific case that was failing with full LLM decomposition."""
     
-    # Manually create the decomposition from the result file
-    decomposition = QueryDecomposition(
-        main_query="Seven years before the opening of the Brewer Fieldhouse in Columbia, Missouri, what was a campus of the University of Missouri known as?",
-        question_type="bridge",
-        reasoning="This is a bridge question requiring sequential steps",
-        subquestions=[
-            SubQuestion(
-                id="SQ1",
-                question="When did the Brewer Fieldhouse in Columbia, Missouri open?",
-                depends_on=[],
-                reasoning="Identify the opening year of the Brewer Fieldhouse"
-            ),
-            SubQuestion(
-                id="SQ2",
-                question="What year was it seven years before [SQ1_Answer]?",
-                depends_on=["SQ1"],
-                reasoning="Calculate the year seven years before the opening"
-            ),
-            SubQuestion(
-                id="SQ3",
-                question="What was a campus of the University of Missouri known as in [SQ2_Answer]?",
-                depends_on=["SQ2"],
-                reasoning="Find what the campus was called in that year"
-            )
-        ]
-    )
+    # Use the EXACT question from the results
+    main_query = "Seven years before the opening of the Brewer Fieldhouse in Columbia, Missouri, where was Chester Brewer working as head football coach and head basketball coach?"
+    expected_answer = "University Farm"
     
     print("=" * 80)
-    print("Testing Transitive Dependency Fix")
+    print("Testing Transitive Dependency Fix with Full LLM Decomposition")
     print("=" * 80)
-    print(f"Main Query: {decomposition.main_query}")
-    print(f"Expected Answer: University Farm")
+    print(f"Main Query: {main_query}")
+    print(f"Expected Answer: {expected_answer}")
     print()
     
-    # Run sequential answering
-    result = await answer_subquestions_sequential(
+    # Step 1: Decompose query using LLM
+    print("Step 1: Query Decomposition (LLM)")
+    print("-" * 80)
+    decomposition_result = await decompose_query(client, main_query)
+    
+    if not decomposition_result['success']:
+        print(f"❌ Decomposition failed: {decomposition_result.get('error', 'Unknown error')}")
+        log_file = finalize_log()
+        print(f"📄 LLM interactions logged to: {log_file}")
+        return False
+    
+    decomposition = decomposition_result['decomposition']
+    
+    print(f"✅ Decomposed into {len(decomposition.subquestions)} sub-questions:")
+    for sq in decomposition.subquestions:
+        print(f"  {sq.id}: {sq.question}")
+        if sq.depends_on:
+            print(f"       → Depends on: {', '.join(sq.depends_on)}")
+    print()
+    
+    # Step 2: Answer sub-questions sequentially
+    print("Step 2: Sequential Answering")
+    print("-" * 80)
+    answer_result = await answer_subquestions_sequential(
         client, db, decomposition,
         use_fts=True,
-        apply_llm_filter_stage1a=True
+        apply_llm_filter_stage1a=True,
+        verbose=True
     )
     
+    if not answer_result['success']:
+        print(f"❌ Answering failed: {answer_result.get('error', 'Unknown error')}")
+        log_file = finalize_log()
+        print(f"📄 LLM interactions logged to: {log_file}")
+        return False
+    
     print("\n" + "=" * 80)
-    print("Results")
+    print("Sub-Question Results")
     print("=" * 80)
     
     for sq in decomposition.subquestions:
@@ -74,22 +85,32 @@ async def test_transitive_dependency():
         
         if hasattr(sq, 'retrieved_passages'):
             print(f"Retrieved Passages: {len(sq.retrieved_passages)}")
-            for passage in sq.retrieved_passages[:3]:
-                print(f"  - {passage.get('title', 'Unknown')}")
+            for i, passage in enumerate(sq.retrieved_passages[:3], 1):
+                print(f"  [{i}] {passage.get('title', 'Unknown')}")
+    
+    # Step 3: Final answer synthesis
+    print("\n" + "=" * 80)
+    print("Step 3: Final Answer Synthesis")
+    print("-" * 80)
+    final_answer = await synthesize_final_answer(client, decomposition)
     
     print("\n" + "=" * 80)
     print("Final Answer")
     print("=" * 80)
-    print(f"Predicted: {result.get('final_answer', 'N/A')}")
-    print(f"Expected: University Farm")
+    print(f"Predicted: {final_answer}")
+    print(f"Expected: {expected_answer}")
     
     # Check success
-    final_answer = result.get('final_answer', '').lower()
-    if 'university farm' in final_answer:
+    final_answer_lower = final_answer.lower()
+    if 'university farm' in final_answer_lower:
         print("\n✅ SUCCESS! Answer contains 'University Farm'")
+        log_file = finalize_log()
+        print(f"📄 LLM interactions logged to: {log_file}")
         return True
     else:
         print("\n❌ FAILED - Answer does not contain 'University Farm'")
+        log_file = finalize_log()
+        print(f"📄 LLM interactions logged to: {log_file}")
         return False
 
 if __name__ == "__main__":

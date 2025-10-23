@@ -2,6 +2,7 @@
 Test Multi-hop Pipeline on 200 Questions
 ==========================================
 Complete evaluation with detailed result tracking.
+Now includes full LLM interaction logging.
 """
 
 import asyncio
@@ -15,6 +16,7 @@ from tqdm import tqdm
 
 from metadata_db import MetadataDB
 from multihop_pipeline import process_single_question
+from llm_logger import init_logger, finalize_log
 
 load_dotenv()
 
@@ -437,6 +439,13 @@ async def evaluate_multihop_200(
 
 async def main():
     """Main execution"""
+    # Initialize LLM logger
+    print("=" * 80)
+    print("Initializing LLM Interaction Logger")
+    print("=" * 80)
+    logger = init_logger()
+    print(f"✅ Logger initialized\n")
+    
     # Load questions
     questions_file = 'HotpotQA/hotpotqa_sample_200.json'
     
@@ -457,6 +466,13 @@ async def main():
         use_fts=True,
         apply_llm_filter_stage1a=True
     )
+    
+    # Finalize log
+    print("\n" + "=" * 80)
+    print("Finalizing LLM Interaction Log")
+    print("=" * 80)
+    log_file = finalize_log()
+    print(f"📄 All LLM interactions saved to: {log_file}")
     
     return results
 

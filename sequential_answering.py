@@ -30,6 +30,7 @@ from Prompt.subquestion_answering_prompt import (
     SUBQUESTION_ANSWERING_PROMPT,
     FINAL_ANSWER_SYNTHESIS_PROMPT
 )
+from llm_logger import log_llm_call, log_llm_error
 
 
 async def extract_entities_from_subquestion(
@@ -79,6 +80,17 @@ async def extract_entities_from_subquestion(
         
         result_text = response.choices[0].message.content.strip()
         
+        # Log LLM interaction
+        log_llm_call(
+            call_type="Entity Extraction (Subquestion)",
+            input_text=formatted_prompt,
+            output_text=result_text,
+            context={
+                "subquestion": subquestion,
+                "has_previous_context": bool(previous_context)
+            }
+        )
+        
         # Remove code block markers if present
         if result_text.startswith('```json'):
             result_text = result_text[7:]
@@ -96,6 +108,11 @@ async def extract_entities_from_subquestion(
         }
         
     except Exception as e:
+        log_llm_error(
+            call_type="Entity Extraction (Subquestion)",
+            error=str(e),
+            context={"subquestion": subquestion}
+        )
         return {
             'success': False,
             'error': str(e),
@@ -297,6 +314,19 @@ async def generate_answer_from_passages(
         
         answer = response.choices[0].message.content.strip()
         
+        # Log LLM interaction
+        log_llm_call(
+            call_type="Answer Generation (Subquestion)",
+            input_text=prompt,
+            output_text=answer,
+            context={
+                "subquestion": subquestion,
+                "is_final_sq": is_final_sq,
+                "num_passages": len(passages),
+                "has_previous_context": bool(previous_context)
+            }
+        )
+        
         # Clean up answer
         if answer.startswith("Answer:"):
             answer = answer[7:].strip()
@@ -304,6 +334,11 @@ async def generate_answer_from_passages(
         return answer
         
     except Exception as e:
+        log_llm_error(
+            call_type="Answer Generation (Subquestion)",
+            error=str(e),
+            context={"subquestion": subquestion}
+        )
         return f"Error generating answer: {str(e)}"
 
 
@@ -634,6 +669,19 @@ async def synthesize_final_answer(
         
         final_answer = response.choices[0].message.content.strip()
         
+        # Log LLM interaction
+        log_llm_call(
+            call_type="Final Answer Synthesis",
+            input_text=prompt,
+            output_text=final_answer,
+            context={
+                "main_query": decomposition.main_query,
+                "num_subquestions": len(decomposition.subquestions),
+                "total_passages": len(all_passages),
+                "unique_passages": len(unique_passages)
+            }
+        )
+        
         # Clean up answer
         if final_answer.startswith("Final Answer:"):
             final_answer = final_answer[13:].strip()
@@ -641,6 +689,11 @@ async def synthesize_final_answer(
         return final_answer
         
     except Exception as e:
+        log_llm_error(
+            call_type="Final Answer Synthesis",
+            error=str(e),
+            context={"main_query": decomposition.main_query}
+        )
         return f"Error synthesizing final answer: {str(e)}"
 
 

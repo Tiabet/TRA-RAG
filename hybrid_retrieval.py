@@ -18,6 +18,7 @@ from dotenv import load_dotenv
 from metadata_db import MetadataDB
 from Prompt.entity_extraction_prompt import ENTITY_EXTRACTION_PROMPT
 from Prompt.title_filtering_prompt import TITLE_FILTERING_PROMPT
+from llm_logger import log_llm_call, log_llm_error
 
 # Load environment variables
 load_dotenv()
@@ -62,6 +63,14 @@ async def extract_entities_from_query(client: AsyncOpenAI, query: str) -> Dict:
         
         result_text = response.choices[0].message.content.strip()
         
+        # Log LLM interaction
+        log_llm_call(
+            call_type="Entity Extraction (Main Query)",
+            input_text=formatted_prompt,
+            output_text=result_text,
+            context={"query": query}
+        )
+        
         # Remove code block markers if present
         if result_text.startswith('```json'):
             result_text = result_text[7:]
@@ -79,6 +88,11 @@ async def extract_entities_from_query(client: AsyncOpenAI, query: str) -> Dict:
         }
         
     except Exception as e:
+        log_llm_error(
+            call_type="Entity Extraction (Main Query)",
+            error=str(e),
+            context={"query": query}
+        )
         return {
             'success': False,
             'error': str(e),
@@ -193,6 +207,18 @@ async def stage1a_value_matching(
             
             result_text = response.choices[0].message.content.strip()
             
+            # Log LLM interaction
+            log_llm_call(
+                call_type="LLM Title Filtering (Stage 1-A)",
+                input_text=prompt,
+                output_text=result_text,
+                context={
+                    "query": query,
+                    "entity_name": entity_name,
+                    "num_candidates": len(candidates_with_snippets)
+                }
+            )
+            
             # Parse JSON response
             if result_text.startswith('```json'):
                 result_text = result_text[7:]
@@ -218,6 +244,14 @@ async def stage1a_value_matching(
             return filtered_matches, filter_info
             
         except Exception as e:
+            log_llm_error(
+                call_type="LLM Title Filtering (Stage 1-A)",
+                error=str(e),
+                context={
+                    "query": query,
+                    "entity_name": entity_name
+                }
+            )
             # Fallback: return all matches if LLM fails
             filter_info = {
                 'stage': '1-A',
@@ -347,6 +381,19 @@ async def stage1b_type_filtering(
         
         result_text = response.choices[0].message.content.strip()
         
+        # Log LLM interaction
+        log_llm_call(
+            call_type="LLM Title Filtering (Stage 1-B)",
+            input_text=prompt,
+            output_text=result_text,
+            context={
+                "query": query,
+                "entity_name": entity_name,
+                "num_candidates": len(candidates_with_snippets),
+                "types": [f"{t.get('type', '')}/{t.get('subtype', '')}" for t in possible_types]
+            }
+        )
+        
         # Parse JSON response
         if result_text.startswith('```json'):
             result_text = result_text[7:]
@@ -373,6 +420,15 @@ async def stage1b_type_filtering(
         return filtered_passages, filter_info
         
     except Exception as e:
+        log_llm_error(
+            call_type="LLM Title Filtering (Stage 1-B)",
+            error=str(e),
+            context={
+                "query": query,
+                "entity_name": entity_name,
+                "types": [f"{t.get('type', '')}/{t.get('subtype', '')}" for t in possible_types]
+            }
+        )
         # Fallback: return all type-matched candidates if LLM fails
         filter_info = {
             'stage': '1-B',

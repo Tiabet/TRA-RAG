@@ -13,6 +13,7 @@ from typing import Dict, List, Optional
 from openai import AsyncOpenAI
 
 from Prompt.query_decomposition_prompt import QUERY_DECOMPOSITION_PROMPT
+from llm_logger import log_llm_call, log_llm_error
 
 
 class SubQuestion:
@@ -155,6 +156,14 @@ async def decompose_query(
         
         result_text = response.choices[0].message.content.strip()
         
+        # Log LLM interaction
+        log_llm_call(
+            call_type="Query Decomposition",
+            input_text=formatted_prompt,
+            output_text=result_text,
+            context={"query": query}
+        )
+        
         # Remove code block markers if present
         if result_text.startswith('```json'):
             result_text = result_text[7:]
@@ -206,6 +215,11 @@ async def decompose_query(
         }
         
     except json.JSONDecodeError as e:
+        log_llm_error(
+            call_type="Query Decomposition",
+            error=f"Failed to parse JSON: {str(e)}",
+            context={"query": query}
+        )
         return {
             'success': False,
             'error': f"Failed to parse JSON: {str(e)}",
@@ -213,6 +227,11 @@ async def decompose_query(
         }
     
     except Exception as e:
+        log_llm_error(
+            call_type="Query Decomposition",
+            error=str(e),
+            context={"query": query}
+        )
         return {
             'success': False,
             'error': f"Decomposition failed: {str(e)}"
