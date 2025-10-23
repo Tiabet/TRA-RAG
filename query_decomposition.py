@@ -248,6 +248,9 @@ def build_context_from_previous(
     Build context string from previous answered sub-questions.
     Includes both answers AND retrieved passages to provide full context.
     
+    CRITICAL: Collects ALL transitive dependencies!
+    - SQ3 depends on SQ2, SQ2 depends on SQ1 → SQ3 gets context from BOTH SQ1 and SQ2
+    
     Args:
         current_sq: Current sub-question being processed
         decomposition: QueryDecomposition with previous answers
@@ -257,8 +260,39 @@ def build_context_from_previous(
     """
     context_parts = []
     
-    # Get all dependencies
-    for dep_id in current_sq.depends_on:
+    # Helper function to recursively collect all transitive dependencies
+    def collect_all_dependencies(sq_id: str, visited: set = None) -> List[str]:
+        """Recursively collect all transitive dependencies in execution order."""
+        if visited is None:
+            visited = set()
+        
+        if sq_id in visited:
+            return []
+        
+        visited.add(sq_id)
+        all_deps = []
+        
+        sq = decomposition.get_subquestion(sq_id)
+        if sq:
+            # First collect dependencies of dependencies (depth-first)
+            for dep_id in sq.depends_on:
+                all_deps.extend(collect_all_dependencies(dep_id, visited))
+            
+            # Then add this SQ's direct dependencies
+            all_deps.extend(sq.depends_on)
+        
+        return all_deps
+    
+    # Get ALL transitive dependencies (removes duplicates while preserving order)
+    all_dependency_ids = []
+    seen = set()
+    for dep_id in collect_all_dependencies(current_sq.id):
+        if dep_id not in seen:
+            all_dependency_ids.append(dep_id)
+            seen.add(dep_id)
+    
+    # Build context from ALL dependencies (not just direct ones!)
+    for dep_id in all_dependency_ids:
         dep_sq = decomposition.get_subquestion(dep_id)
         if dep_sq and dep_sq.answer:
             context_parts.append(f"{dep_sq.id}: {dep_sq.question}")

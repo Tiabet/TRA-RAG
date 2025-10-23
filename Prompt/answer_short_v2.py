@@ -8,18 +8,44 @@ For the final SQ, use the original short-answer prompt.
 DETAILED_SUBQUESTION_ANSWERING_PROMPT = """---Role---
 You are a multi-hop retrieval-augmented assistant specializing in extracting precise information from provided passages.
 
+---Main Query (Context)---
+{{main_query}}
+
 ---Goal---
-Carefully read the Information passages and extract the answer to the Sub-Question.
-Use ONLY the given Information. If the information is insufficient or the answer cannot be found, reply with "Insufficient information."
+Carefully read ALL the Information passages (both current and previous context) and extract the answer to the Sub-Question.
+Use ONLY the given Information. ONLY reply with "Insufficient information." if you have thoroughly checked ALL passages and cannot find the answer.
 
 ---Instructions---
-1. **Read Carefully**: Examine all provided passages thoroughly
-2. **Extract Precisely**: Find the exact answer from the passages
-3. **Check Context**: Consider the previous context to understand what information is needed
-   - Previous context may include passages from earlier sub-questions
-   - Use both current passages AND previous passages to answer
-4. **Be Specific**: Provide specific names, dates, places, or values - not generic descriptions
-5. **Stay Grounded**: Do NOT infer, assume, or generate information beyond what is explicitly stated
+1. **Read ALL Passages Thoroughly**: 
+   - Examine BOTH current passages AND previous context passages
+   - Check all metadata fields: description, main_entity, attributes, events
+   - The answer might be in ANY of these locations
+
+2. **Extract Precisely**: 
+   - Find the exact answer from the passages
+   - Look for names, dates, places, values in all metadata fields
+   - Check attributes and events sections carefully
+
+3. **Apply Simple Reasoning When Needed**:
+   - You CAN perform basic reasoning on passage information (e.g., arithmetic, temporal logic)
+   - Example: "seven years before 1999" → calculate 1992
+   - Example: "older brother of X" + "X born in 1980" → infer birth year relationship
+   - BUT do NOT use external knowledge - only reason about information IN the passages
+
+4. **Check Previous Context FIRST**:
+   - Previous context may already contain the answer
+   - Previous passages from earlier sub-questions are IMPORTANT
+   - The answer might be in previous passages, not just current ones
+
+5. **Be Specific**: 
+   - Provide specific names, dates, places, or values
+   - NOT generic descriptions like "a plan" or "a person"
+   - Extract exact values from metadata
+
+6. **Stay Grounded**: 
+   - Base your answer on passage information
+   - You can REASON about the information (calculate, infer relationships)
+   - But do NOT add facts not derivable from the passages
 
 ---Response Format---
 - Provide a SHORT, DIRECT answer (typically 1-10 words)
@@ -29,54 +55,69 @@ Use ONLY the given Information. If the information is insufficient or the answer
 - For places: Use specific location names (e.g., "University Farm" not "a university")
 
 ---Response Rules---
-✓ Answer must be factual and directly from the passages
+✓ Answer must be based on passage information (but you can reason about it)
+✓ You CAN perform simple calculations, temporal logic, or relationship inference
 ✓ Answer must be concise (max 15 words)
-✓ If multiple passages mention the answer, prefer the most specific one
+✓ Check BOTH current passages AND previous context passages
+✓ Check ALL metadata fields (description, main_entity, attributes, events)
 ✓ If passages contain structured data (JSON-like), extract exact values
-✗ Do NOT make assumptions or inferences beyond the text
+✗ Do NOT use external knowledge not present in passages
 ✗ Do NOT provide explanations unless the question asks for them
 ✗ Do NOT say "according to the passage" - just give the answer
+✗ Do NOT say "Insufficient information" without checking ALL passages thoroughly
 
----Previous Context---
+---Previous Context (IMPORTANT - May contain the answer!)---
 {{previous_context}}
 
----Information Passages---
+---Current Information Passages---
 {{passages}}
 
 ---Sub-Question---
 {{subquestion}}
 
 ---Answer---
-Extract and provide ONLY the answer from the passages above.
-If the passages do not contain the answer, respond: "Insufficient information."
+Check ALL passages above (both current and previous context) thoroughly.
+You can perform simple reasoning on the passage information (e.g., "seven years before 1999" = 1992).
+Extract and provide ONLY the answer.
+If after checking ALL passages, metadata fields, and previous context you still cannot find or derive the answer, respond: "Insufficient information."
 """
 
 
 FINAL_SUBQUESTION_ANSWERING_PROMPT = """---Role---
 You are a multi-hop retrieval-augmented assistant.
 
+---Main Query (Context)---
+{{main_query}}
+
 ---Goal---
-Read the Information passages and generate the correct answer to the Sub-Question.
-Use only the given Information; if it is insufficient, reply with "Insufficient information.".
+Read ALL the Information passages (both current and previous context) and generate the correct answer to the Sub-Question.
+Use only the given Information; ONLY say "Insufficient information." if you have checked ALL passages and truly cannot find the answer.
 
 ---Target response length and format---
 - One-word or minimal-phrase answer (max 5 words).
 
 ---Response Rules---
-- Answer must be short and concise.
-- Answer language must match the Sub-Question language.
-- Do NOT add or invent facts beyond the Information.
-- If the Information does not contain the answer, respond with "Insufficient information." only.
+- Check BOTH current passages AND previous context passages thoroughly
+- Check ALL metadata fields: description, main_entity, attributes, events
+- You CAN perform simple reasoning (arithmetic, temporal logic, relationship inference)
+- Example: "2300 - 1000" → calculate 1300
+- Answer must be short and concise
+- Answer language must match the Sub-Question language
+- Do NOT use external knowledge not in passages
+- ONLY respond "Insufficient information." if you checked ALL available information and cannot find or derive the answer
 
----Previous Context---
+---Previous Context (IMPORTANT - May contain the answer!)---
 {{previous_context}}
 
----Information---
+---Current Information---
 {{passages}}
 
 ---Sub-Question---
 {{subquestion}}
 
 ---Answer---
-Provide only the answer (max 5 words). If information is insufficient, respond "Insufficient information.".
+Check ALL passages (current + previous context) thoroughly.
+You can perform simple reasoning on passage information (e.g., temporal calculations).
+Provide only the answer (max 5 words). 
+If after checking ALL information you cannot find or derive the answer, respond "Insufficient information.".
 """

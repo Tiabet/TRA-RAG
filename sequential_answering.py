@@ -200,7 +200,8 @@ async def generate_answer_from_passages(
     subquestion: str,
     passages: List[Dict],
     previous_context: str = "",
-    is_final_sq: bool = False
+    is_final_sq: bool = False,
+    main_query: str = ""
 ) -> str:
     """
     Generate answer from retrieved passages using LLM.
@@ -211,6 +212,7 @@ async def generate_answer_from_passages(
         passages: Retrieved passages
         previous_context: Context from previous sub-questions
         is_final_sq: Whether this is the final sub-question (use short prompt)
+        main_query: Main query for context
         
     Returns:
         Generated answer string
@@ -268,6 +270,10 @@ async def generate_answer_from_passages(
         prompt = prompt.replace(
             "{{previous_context}}", 
             previous_context if previous_context else "(None)"
+        )
+        prompt = prompt.replace(
+            "{{main_query}}", 
+            main_query if main_query else "(No main query provided)"
         )
         
         # Call LLM with appropriate max_tokens
@@ -364,7 +370,8 @@ async def answer_subquestion(
         
         # Step 5: Generate answer
         answer = await generate_answer_from_passages(
-            client, actual_question, passages, previous_context, is_final_sq
+            client, actual_question, passages, previous_context, is_final_sq,
+            decomposition.main_query  # Pass main query to answer generation
         )
         
         # Update SubQuestion object
@@ -584,9 +591,10 @@ async def synthesize_final_answer(
             # Build passage text
             passage_parts = [f"[{i}] {title}"]
             
+            # Include FULL metadata (no truncation)
             for key in ['description', 'main_entity', 'attributes', 'events']:
                 if key in metadata and metadata[key]:
-                    value = str(metadata[key])[:200]  # First 200 chars
+                    value = str(metadata[key])  # FULL value, no truncation!
                     passage_parts.append(f"  {key}: {value}")
             
             passage_texts.append('\n'.join(passage_parts))
