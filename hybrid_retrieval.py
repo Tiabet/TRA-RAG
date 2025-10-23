@@ -94,7 +94,8 @@ async def stage1a_value_matching(
     entity_type: Optional[str] = None,
     entity_subtype: Optional[str] = None,
     use_fts: bool = True,
-    apply_llm_filter: bool = True
+    apply_llm_filter: bool = True,
+    main_query: Optional[str] = None
 ) -> Tuple[List[Dict], Dict]:
     """
     Stage 1-A: Value-based entity matching with optional LLM filtering.
@@ -103,64 +104,77 @@ async def stage1a_value_matching(
     Args:
         client: AsyncOpenAI client
         db: MetadataDB instance
-        query: Original query (for LLM filtering)
+        query: Current sub-query (for LLM filtering)
         entity_name: Entity name to search for
         entity_type: Optional entity type (used for type fallback)
         entity_subtype: Optional entity subtype
         use_fts: Use FTS for search
         apply_llm_filter: If True, apply LLM title filtering (NEW!)
+        main_query: Optional main query for dual-query filtering
         
     Returns:
         Tuple of (matched_passages, filter_info)
     """
     # Step 1: Get initial matches from DB
+    # IMPORTANT: Stage 1-A is VALUE-BASED search, so we DON'T apply type filters
+    # Type filtering is done in Stage 1-B (type-based LLM filtering)
     if use_fts:
-        matches = db.search_by_entity_fts(entity_name, entity_type, entity_subtype)
+        matches = db.search_by_entity_fts(entity_name, None, None)  # No type filter
     else:
-        matches = db.search_by_entity(entity_name, entity_type, entity_subtype, search_title_only=False)
-    
-    # Type fallback: if no matches with type, retry without type
-    if len(matches) == 0 and entity_type:
-        if use_fts:
-            matches = db.search_by_entity_fts(entity_name, None, None)
-        else:
-            matches = db.search_by_entity(entity_name, None, None, search_title_only=False)
+        matches = db.search_by_entity(entity_name, None, None, search_title_only=False)
     
     initial_count = len(matches)
     
     # Step 2: Apply LLM filtering if requested
     if apply_llm_filter and matches:
-        # Prepare candidates with title + snippet
+        # Prepare candidates with title + matched fields
         candidates_with_snippets = []
         for m in matches:
-            # Extract key attributes for snippet (first 150 chars of metadata)
-            metadata_str = m.get('metadata', '')
-            if isinstance(metadata_str, str):
-                try:
-                    metadata = json.loads(metadata_str)
-                except:
-                    metadata = {}
+            # Use matched_fields if available (from FTS search)
+            matched_fields = m.get('matched_fields', [])
+            
+            if matched_fields:
+                # Show matched key-value pairs
+                matched_info = []
+                for field in matched_fields[:5]:  # Max 5 matched fields
+                    key = field['key']
+                    value = field['value']
+                    # Truncate long values
+                    if len(value) > 150:
+                        value = value[:150] + "..."
+                    matched_info.append(f"{key}: {value}")
+                
+                snippet = '\n'.join(matched_info) if matched_info else 'No matched fields'
             else:
-                metadata = metadata_str or {}
-            
-            # Build snippet from key fields
-            snippet_parts = []
-            for key in ['description', 'main_entity', 'attributes', 'events']:
-                if key in metadata and metadata[key]:
-                    value = str(metadata[key])[:100]  # First 100 chars
-                    snippet_parts.append(f"{key}: {value}")
-            
-            snippet = '; '.join(snippet_parts[:2]) if snippet_parts else 'No metadata'  # Max 2 fields
+                # Fallback: Extract metadata if matched_fields not available
+                metadata_str = m.get('metadata', '')
+                if isinstance(metadata_str, str):
+                    try:
+                        metadata = json.loads(metadata_str)
+                    except:
+                        metadata = {}
+                else:
+                    metadata = metadata_str or {}
+                
+                # Build snippet from key fields
+                snippet_parts = []
+                for key in ['description', 'main_entity', 'attributes', 'events']:
+                    if key in metadata and metadata[key]:
+                        value = str(metadata[key])[:100]  # First 100 chars
+                        snippet_parts.append(f"{key}: {value}")
+                
+                snippet = '; '.join(snippet_parts[:2]) if snippet_parts else 'No metadata'  # Max 2 fields
             
             candidates_with_snippets.append({
                 'title': m['title'],
                 'type': m.get('type', 'Unknown'),
                 'subtype': m.get('subtype', 'Unknown'),
-                'snippet': snippet[:150]  # Max 150 chars total
+                'matched_content': snippet  # Renamed from 'snippet' to 'matched_content'
             })
         
         # Format prompt for LLM
-        prompt = TITLE_FILTERING_PROMPT.replace('{{QUERY}}', query)
+        prompt = TITLE_FILTERING_PROMPT.replace('{{MAIN_QUERY}}', main_query or query)
+        prompt = prompt.replace('{{SUB_QUERY}}', query)
         prompt = prompt.replace('{{ENTITY_NAME}}', entity_name)
         prompt = prompt.replace('{{ENTITY_TYPE}}', entity_type or 'Unknown')
         prompt = prompt.replace('{{ENTITY_SUBTYPE}}', entity_subtype or 'Unknown')
@@ -230,7 +244,8 @@ async def stage1b_type_filtering(
     db: MetadataDB,
     query: str,
     entity_name: str,
-    possible_types: List[Dict]  # Changed: now accepts list of {type, subtype} dicts
+    possible_types: List[Dict],  # Changed: now accepts list of {type, subtype} dicts
+    main_query: Optional[str] = None
 ) -> Tuple[List[Dict], Dict]:
     """
     Stage 1-B: Type/Subtype filtering → LLM title filtering.
@@ -244,9 +259,10 @@ async def stage1b_type_filtering(
     Args:
         client: AsyncOpenAI client
         db: MetadataDB instance
-        query: Original query
+        query: Current sub-query
         entity_name: Entity name
         possible_types: List of {type, subtype} dicts to try
+        main_query: Optional main query for dual-query filtering
         
     Returns:
         Tuple of (filtered_passages, filter_info)
@@ -277,10 +293,10 @@ async def stage1b_type_filtering(
             'skipped': len(tried_types) == 0
         }
     
-    # Prepare candidates with title + snippet
+    # Prepare candidates with title + key metadata fields
     candidates_with_snippets = []
     for c in all_candidates:
-        # Extract key attributes for snippet (first 150 chars of metadata)
+        # Extract key attributes
         metadata_str = c.get('metadata', '')
         if isinstance(metadata_str, str):
             try:
@@ -290,25 +306,29 @@ async def stage1b_type_filtering(
         else:
             metadata = metadata_str or {}
         
-        # Build snippet from key fields
-        snippet_parts = []
-        for key in ['description', 'main_entity', 'attributes', 'events']:
+        # Build matched content showing key-value pairs
+        content_parts = []
+        for key in ['title', 'description', 'main_entity', 'attributes', 'events', 'relationships']:
             if key in metadata and metadata[key]:
-                value = str(metadata[key])[:100]  # First 100 chars
-                snippet_parts.append(f"{key}: {value}")
+                value = str(metadata[key])
+                # Truncate long values
+                if len(value) > 150:
+                    value = value[:150] + "..."
+                content_parts.append(f"{key}: {value}")
         
-        snippet = '; '.join(snippet_parts[:2]) if snippet_parts else 'No metadata'  # Max 2 fields
+        matched_content = '\n'.join(content_parts[:5]) if content_parts else 'No metadata available'
         
         candidates_with_snippets.append({
             'title': c['title'],
             'type': c.get('type', 'Unknown'),
             'subtype': c.get('subtype', 'Unknown'),
-            'snippet': snippet[:150]  # Max 150 chars total
+            'matched_content': matched_content  # Consistent with Stage 1-A
         })
     
     # Format prompt for LLM (use first type as primary)
     primary_type = possible_types[0] if possible_types else {}
-    prompt = TITLE_FILTERING_PROMPT.replace('{{QUERY}}', query)
+    prompt = TITLE_FILTERING_PROMPT.replace('{{MAIN_QUERY}}', main_query or query)
+    prompt = prompt.replace('{{SUB_QUERY}}', query)
     prompt = prompt.replace('{{ENTITY_NAME}}', entity_name)
     prompt = prompt.replace('{{ENTITY_TYPE}}', primary_type.get('type', 'Unknown'))
     prompt = prompt.replace('{{ENTITY_SUBTYPE}}', primary_type.get('subtype', 'Unknown'))

@@ -246,13 +246,14 @@ def build_context_from_previous(
 ) -> str:
     """
     Build context string from previous answered sub-questions.
+    Includes both answers AND retrieved passages to provide full context.
     
     Args:
         current_sq: Current sub-question being processed
         decomposition: QueryDecomposition with previous answers
         
     Returns:
-        Context string with previous Q&A pairs
+        Context string with previous Q&A pairs and passages
     """
     context_parts = []
     
@@ -262,6 +263,29 @@ def build_context_from_previous(
         if dep_sq and dep_sq.answer:
             context_parts.append(f"{dep_sq.id}: {dep_sq.question}")
             context_parts.append(f"Answer: {dep_sq.answer}")
+            
+            # Add retrieved passages from previous SQ (CRITICAL for dependent questions!)
+            if hasattr(dep_sq, 'retrieved_passages') and dep_sq.retrieved_passages:
+                context_parts.append(f"\nRetrieved Passages for {dep_sq.id}:")
+                for i, passage in enumerate(dep_sq.retrieved_passages[:5], 1):  # Top 5 passages
+                    title = passage.get('title', 'Unknown')
+                    context_parts.append(f"  [{i}] {title}")
+                    
+                    # Add FULL metadata (no truncation)
+                    metadata = passage.get('metadata', {})
+                    if isinstance(metadata, str):
+                        try:
+                            import json
+                            metadata = json.loads(metadata)
+                        except:
+                            metadata = {}
+                    
+                    # Show ALL metadata fields fully
+                    for key in ['description', 'main_entity', 'attributes', 'events']:
+                        if key in metadata and metadata[key]:
+                            value = str(metadata[key])  # FULL value, no truncation!
+                            context_parts.append(f"      {key}: {value}")
+            
             context_parts.append("")  # Empty line for readability
     
     if context_parts:

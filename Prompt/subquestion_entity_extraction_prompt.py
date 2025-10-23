@@ -316,7 +316,10 @@ Answer: "2014 World Junior Ice Hockey Championships"
 {{previous_context}}
 
 **Focus on**: New entities in the current sub-question that need to be searched.
-**Note**: Entities from previous answers are typically already substituted into the sub-question.
+**Note**: 
+- Entities from previous answers are typically already substituted into the sub-question
+- Previous context may include retrieved passages from earlier sub-questions
+- You can use information from previous passages to understand entity context, but still extract entities from the current sub-question
 
 ---
 

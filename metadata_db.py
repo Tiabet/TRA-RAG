@@ -252,6 +252,9 @@ class MetadataDB:
         모든 value를 검색하되 FTS를 사용해서 빠르게.
         
         Type 필터링 완화: Type이 맞는 결과가 없으면 type 없이 재검색
+        
+        Returns:
+            List of dicts with 'title', 'metadata', 'type', 'subtype', 'matched_fields'
         """
         # FTS5 query - escape special characters and use phrase search
         # Remove FTS special characters: " - ( ) [ ] { } ^ ~ * : ,
@@ -280,10 +283,20 @@ class MetadataDB:
         rows = self.cursor.fetchall()
         
         results = []
+        search_terms = entity_name.lower().split()
+        
         for row in rows:
+            metadata_obj = json.loads(row['metadata_json'])
+            
+            # Find which fields matched the search term
+            matched_fields = self._find_matched_fields(metadata_obj, search_terms)
+            
             results.append({
                 'title': row['title'],
-                'metadata': json.loads(row['metadata_json'])
+                'type': row['type'],
+                'subtype': row['subtype'],
+                'metadata': metadata_obj,
+                'matched_fields': matched_fields  # NEW: 매칭된 key-value 쌍
             })
         
         # Fallback: If type filtering returned 0 results, retry without type filter
@@ -298,12 +311,56 @@ class MetadataDB:
             rows = self.cursor.fetchall()
             
             for row in rows:
+                metadata_obj = json.loads(row['metadata_json'])
+                matched_fields = self._find_matched_fields(metadata_obj, search_terms)
+                
                 results.append({
                     'title': row['title'],
-                    'metadata': json.loads(row['metadata_json'])
+                    'type': row['type'],
+                    'subtype': row['subtype'],
+                    'metadata': metadata_obj,
+                    'matched_fields': matched_fields
                 })
         
         return results
+    
+    def _find_matched_fields(self, metadata: Dict, search_terms: List[str]) -> List[Dict]:
+        """
+        Find which metadata fields contain the search terms.
+        Returns list of {key: value} pairs that matched.
+        """
+        matched = []
+        
+        def search_recursive(obj, path=""):
+            """Recursively search through nested dict/list"""
+            if isinstance(obj, dict):
+                for key, value in obj.items():
+                    current_path = f"{path}.{key}" if path else key
+                    
+                    # Check if value (converted to string) contains any search term
+                    value_str = str(value).lower()
+                    if any(term in value_str for term in search_terms):
+                        # Limit value length for display
+                        display_value = str(value)
+                        if len(display_value) > 200:
+                            display_value = display_value[:200] + "..."
+                        
+                        matched.append({
+                            'key': current_path,
+                            'value': display_value
+                        })
+                    
+                    # Continue recursion for nested structures
+                    if isinstance(value, (dict, list)):
+                        search_recursive(value, current_path)
+            
+            elif isinstance(obj, list):
+                for i, item in enumerate(obj):
+                    current_path = f"{path}[{i}]"
+                    search_recursive(item, current_path)
+        
+        search_recursive(metadata)
+        return matched
     
     def get_by_title(self, title: str) -> Optional[Dict]:
         """Get metadata by exact title"""

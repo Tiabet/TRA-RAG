@@ -109,7 +109,8 @@ async def retrieve_for_subquestion(
     subquestion: str,
     entities: List[Dict],
     use_fts: bool = True,
-    apply_llm_filter_stage1a: bool = True
+    apply_llm_filter_stage1a: bool = True,
+    main_query: Optional[str] = None
 ) -> Dict:
     """
     Retrieve passages for a sub-question using hybrid retrieval.
@@ -126,6 +127,7 @@ async def retrieve_for_subquestion(
         entities: Extracted entities with types
         use_fts: Use FTS for Stage 1-A
         apply_llm_filter_stage1a: Apply LLM filtering to Stage 1-A
+        main_query: Main query for dual-query filtering
         
     Returns:
         Dict with 'passages', 'retrieval_info'
@@ -156,11 +158,12 @@ async def retrieve_for_subquestion(
         value_matches, value_info = await stage1a_value_matching(
             client, db, subquestion, entity_name, 
             entity_type, entity_subtype, 
-            use_fts, apply_llm_filter_stage1a
+            use_fts, apply_llm_filter_stage1a,
+            main_query
         )
         
         type_matches, type_info = await stage1b_type_filtering(
-            client, db, subquestion, entity_name, possible_types
+            client, db, subquestion, entity_name, possible_types, main_query
         )
         
         # Stage 2: Merge
@@ -196,7 +199,8 @@ async def generate_answer_from_passages(
     client: AsyncOpenAI,
     subquestion: str,
     passages: List[Dict],
-    previous_context: str = ""
+    previous_context: str = "",
+    is_final_sq: bool = False
 ) -> str:
     """
     Generate answer from retrieved passages using LLM.
@@ -206,6 +210,7 @@ async def generate_answer_from_passages(
         subquestion: The sub-question text
         passages: Retrieved passages
         previous_context: Context from previous sub-questions
+        is_final_sq: Whether this is the final sub-question (use short prompt)
         
     Returns:
         Generated answer string
@@ -227,20 +232,35 @@ async def generate_answer_from_passages(
             # Build passage text
             passage_parts = [f"[{i}] {title}"]
             
+            # Include FULL metadata (no truncation)
             for key in ['description', 'main_entity', 'attributes', 'events']:
                 if key in metadata and metadata[key]:
-                    value = str(metadata[key])[:200]  # First 200 chars
+                    value = str(metadata[key])  # FULL value, no truncation!
                     passage_parts.append(f"  {key}: {value}")
             
             passage_texts.append('\n'.join(passage_parts))
         
         passages_text = '\n\n'.join(passage_texts) if passage_texts else "No passages retrieved."
         
-        # Format prompt
-        prompt = SUBQUESTION_ANSWERING_PROMPT.replace(
-            "{{subquestion}}", 
-            subquestion
+        # Choose prompt based on whether this is the final SQ
+        from Prompt.answer_short_v2 import (
+            DETAILED_SUBQUESTION_ANSWERING_PROMPT,
+            FINAL_SUBQUESTION_ANSWERING_PROMPT
         )
+        
+        if is_final_sq:
+            # Use short prompt for final SQ
+            prompt = FINAL_SUBQUESTION_ANSWERING_PROMPT.replace(
+                "{{subquestion}}", 
+                subquestion
+            )
+        else:
+            # Use detailed prompt for intermediate SQs
+            prompt = DETAILED_SUBQUESTION_ANSWERING_PROMPT.replace(
+                "{{subquestion}}", 
+                subquestion
+            )
+        
         prompt = prompt.replace(
             "{{passages}}", 
             passages_text
@@ -250,7 +270,9 @@ async def generate_answer_from_passages(
             previous_context if previous_context else "(None)"
         )
         
-        # Call LLM
+        # Call LLM with appropriate max_tokens
+        max_tokens = 100 if is_final_sq else 200  # More tokens for detailed answers
+        
         response = await client.chat.completions.create(
             model="openai/gpt-4o-mini",
             messages=[
@@ -264,7 +286,7 @@ async def generate_answer_from_passages(
                 }
             ],
             temperature=0.1,
-            max_tokens=100  # Short answers
+            max_tokens=max_tokens
         )
         
         answer = response.choices[0].message.content.strip()
@@ -285,7 +307,8 @@ async def answer_subquestion(
     sq: SubQuestion,
     decomposition: QueryDecomposition,
     use_fts: bool = True,
-    apply_llm_filter_stage1a: bool = True
+    apply_llm_filter_stage1a: bool = True,
+    is_final_sq: bool = False
 ) -> Dict:
     """
     Answer a single sub-question using the full pipeline.
@@ -304,6 +327,7 @@ async def answer_subquestion(
         decomposition: QueryDecomposition with previous answers
         use_fts: Use FTS for retrieval
         apply_llm_filter_stage1a: Apply LLM filtering to Stage 1-A
+        is_final_sq: Whether this is the final sub-question
         
     Returns:
         Dict with 'success', 'answer', 'passages', 'retrieval_info', optional 'error'
@@ -331,7 +355,8 @@ async def answer_subquestion(
         # Step 4: Retrieve passages
         retrieval_result = await retrieve_for_subquestion(
             client, db, actual_question, entities,
-            use_fts, apply_llm_filter_stage1a
+            use_fts, apply_llm_filter_stage1a,
+            decomposition.main_query  # Pass main query for dual-query filtering
         )
         
         passages = retrieval_result['passages']
@@ -339,7 +364,7 @@ async def answer_subquestion(
         
         # Step 5: Generate answer
         answer = await generate_answer_from_passages(
-            client, actual_question, passages, previous_context
+            client, actual_question, passages, previous_context, is_final_sq
         )
         
         # Update SubQuestion object
@@ -407,6 +432,10 @@ async def answer_subquestions_sequential(
         
         all_results = []
         
+        # Determine which is the final SQ (last batch, last SQ in that batch)
+        final_batch_idx = len(batches)
+        final_sq_ids = set(batches[-1]) if batches else set()
+        
         # Process each batch
         for batch_idx, batch in enumerate(batches, 1):
             if verbose:
@@ -418,15 +447,18 @@ async def answer_subquestions_sequential(
                 # Sequential: Single sub-question
                 sq_id = batch[0]
                 sq = decomposition.get_subquestion(sq_id)
+                is_final = (batch_idx == final_batch_idx and sq_id in final_sq_ids)
                 
                 if verbose:
                     print(f"\n{'-'*80}")
                     print(f"Answering {sq.id}: {sq.question}")
+                    if is_final:
+                        print(f"   (Final SQ - using short answer prompt)")
                     print(f"{'-'*80}")
                 
                 result = await answer_subquestion(
                     client, db, sq, decomposition,
-                    use_fts, apply_llm_filter_stage1a
+                    use_fts, apply_llm_filter_stage1a, is_final
                 )
                 
                 if result['success']:
@@ -447,9 +479,10 @@ async def answer_subquestions_sequential(
                 tasks = []
                 for sq_id in batch:
                     sq = decomposition.get_subquestion(sq_id)
+                    is_final = (batch_idx == final_batch_idx and sq_id in final_sq_ids)
                     task = answer_subquestion(
                         client, db, sq, decomposition,
-                        use_fts, apply_llm_filter_stage1a
+                        use_fts, apply_llm_filter_stage1a, is_final
                     )
                     tasks.append((sq_id, task))
                 
@@ -501,7 +534,7 @@ async def synthesize_final_answer(
     decomposition: QueryDecomposition
 ) -> str:
     """
-    Synthesize final answer from all sub-question answers.
+    Synthesize final answer from all sub-question answers AND all retrieved passages.
     
     Args:
         client: AsyncOpenAI client
@@ -513,12 +546,52 @@ async def synthesize_final_answer(
     try:
         # Build sub-question chain text
         chain_parts = []
+        all_passages = []  # Collect all passages from all SQs
+        
         for sq in decomposition.subquestions:
             chain_parts.append(f"{sq.id}: {sq.question}")
             chain_parts.append(f"Answer: {sq.answer if sq.answer else '(Not answered)'}")
             chain_parts.append("")  # Empty line
+            
+            # Collect passages from this SQ
+            if hasattr(sq, 'retrieved_passages') and sq.retrieved_passages:
+                all_passages.extend(sq.retrieved_passages)
         
         subquestion_chain = '\n'.join(chain_parts)
+        
+        # Format passages (deduplicate by title)
+        seen_titles = set()
+        unique_passages = []
+        for passage in all_passages:
+            title = passage.get('title', '')
+            if title and title not in seen_titles:
+                seen_titles.add(title)
+                unique_passages.append(passage)
+        
+        # Build passage text
+        passage_texts = []
+        for i, passage in enumerate(unique_passages[:20], 1):  # Top 20 passages
+            title = passage.get('title', 'Unknown')
+            metadata = passage.get('metadata', {})
+            
+            # Extract key info from metadata
+            if isinstance(metadata, str):
+                try:
+                    metadata = json.loads(metadata)
+                except:
+                    metadata = {}
+            
+            # Build passage text
+            passage_parts = [f"[{i}] {title}"]
+            
+            for key in ['description', 'main_entity', 'attributes', 'events']:
+                if key in metadata and metadata[key]:
+                    value = str(metadata[key])[:200]  # First 200 chars
+                    passage_parts.append(f"  {key}: {value}")
+            
+            passage_texts.append('\n'.join(passage_parts))
+        
+        passages_text = '\n\n'.join(passage_texts) if passage_texts else "No passages retrieved."
         
         # Format prompt
         prompt = FINAL_ANSWER_SYNTHESIS_PROMPT.replace(
@@ -528,6 +601,10 @@ async def synthesize_final_answer(
         prompt = prompt.replace(
             "{{subquestion_chain}}", 
             subquestion_chain
+        )
+        prompt = prompt.replace(
+            "{{passages}}",
+            passages_text
         )
         
         # Call LLM
