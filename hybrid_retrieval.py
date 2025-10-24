@@ -139,80 +139,39 @@ async def stage1a_value_matching(
     
     initial_count = len(matches)
     
-    # Step 2: Apply LLM filtering if requested (with 2-stage fallback)
+    # Step 2: Apply LLM filtering if requested (with FULL metadata from start)
     if apply_llm_filter and matches:
-        def prepare_candidates(matches, use_full_metadata=False):
-            """Prepare candidates with metadata snippets
+        # Prepare candidates with FULL metadata (no truncation, no fallback needed)
+        candidates = []
+        for m in matches:
+            # Extract metadata
+            metadata_str = m.get('metadata', '')
+            if isinstance(metadata_str, str):
+                try:
+                    metadata = json.loads(metadata_str)
+                except:
+                    metadata = {}
+            else:
+                metadata = metadata_str or {}
             
-            Args:
-                matches: List of matched passages
-                use_full_metadata: If True, include full metadata without truncation
-                                  If False, use truncated version for efficiency
-            """
-            candidates = []
-            for m in matches:
-                # Use matched_fields if available (from FTS search)
-                matched_fields = m.get('matched_fields', [])
-                
-                if matched_fields and not use_full_metadata:
-                    # Fast mode: Show matched key-value pairs with truncation
-                    matched_info = []
-                    for field in matched_fields[:5]:  # Max 5 matched fields
-                        key = field['key']
-                        value = field['value']
-                        # Truncate long values
-                        if len(value) > 150:
-                            value = value[:150] + "..."
-                        matched_info.append(f"{key}: {value}")
-                    
-                    snippet = '\n'.join(matched_info) if matched_info else 'No matched fields'
-                else:
-                    # Full mode or fallback: Extract metadata
-                    metadata_str = m.get('metadata', '')
-                    if isinstance(metadata_str, str):
-                        try:
-                            metadata = json.loads(metadata_str)
-                        except:
-                            metadata = {}
-                    else:
-                        metadata = metadata_str or {}
-                    
-                    # Build snippet from metadata fields
-                    snippet_parts = []
-                    excluded_keys = {'title', 'type', 'subtype'}
-                    
-                    if use_full_metadata:
-                        # FULL MODE: No truncation, all fields
-                        for key, value in metadata.items():
-                            if key not in excluded_keys and value:
-                                value_str = str(value)
-                                snippet_parts.append(f"{key}: {value_str}")
-                    else:
-                        # FAST MODE: Truncated, priority fields only
-                        priority_keys = ['relations', 'events', 'attributes', 'description']
-                        for key in priority_keys:
-                            if key in metadata and metadata[key]:
-                                value_str = str(metadata[key])
-                                # relations: keep full, others: truncate
-                                if key == 'relations':
-                                    snippet_parts.append(f"{key}: {value_str}")
-                                else:
-                                    if len(value_str) > 200:
-                                        value_str = value_str[:200] + "..."
-                                    snippet_parts.append(f"{key}: {value_str}")
-                    
-                    snippet = '\n'.join(snippet_parts) if snippet_parts else 'No metadata'
-                
-                candidates.append({
-                    'title': m['title'],
-                    'type': m.get('type', 'Unknown'),
-                    'subtype': m.get('subtype', 'Unknown'),
-                    'matched_content': snippet
-                })
-            return candidates
-        
-        # STAGE 1: Try with truncated metadata (fast)
-        candidates_with_snippets = prepare_candidates(matches, use_full_metadata=False)
+            # Build snippet from ALL metadata fields
+            snippet_parts = []
+            excluded_keys = {'title', 'type', 'subtype'}
+            
+            # Include ALL fields, no truncation
+            for key, value in metadata.items():
+                if key not in excluded_keys and value:
+                    value_str = str(value)
+                    snippet_parts.append(f"{key}: {value_str}")
+            
+            snippet = '\n'.join(snippet_parts) if snippet_parts else 'No metadata'
+            
+            candidates.append({
+                'title': m['title'],
+                'type': m.get('type', 'Unknown'),
+                'subtype': m.get('subtype', 'Unknown'),
+                'matched_content': snippet
+            })
         
         # Format prompt for LLM
         prompt = TITLE_FILTERING_PROMPT.replace('{{MAIN_QUERY}}', main_query or query)
@@ -220,8 +179,8 @@ async def stage1a_value_matching(
         prompt = prompt.replace('{{ENTITY_NAME}}', entity_name)
         prompt = prompt.replace('{{ENTITY_TYPE}}', entity_type or 'Unknown')
         prompt = prompt.replace('{{ENTITY_SUBTYPE}}', entity_subtype or 'Unknown')
-        prompt = prompt.replace('{{COUNT}}', str(len(candidates_with_snippets)))
-        prompt = prompt.replace('{{CANDIDATES}}', json.dumps(candidates_with_snippets, indent=2, ensure_ascii=False))
+        prompt = prompt.replace('{{COUNT}}', str(len(candidates)))
+        prompt = prompt.replace('{{CANDIDATES}}', json.dumps(candidates, indent=2, ensure_ascii=False))
         
         try:
             response = await client.chat.completions.create(
@@ -237,14 +196,13 @@ async def stage1a_value_matching(
             
             # Log LLM interaction
             log_llm_call(
-                call_type="LLM Title Filtering (Stage 1-A, Fast Mode)",
+                call_type="LLM Title Filtering (Stage 1-A)",
                 input_text=prompt,
                 output_text=result_text,
                 context={
                     "query": query,
                     "entity_name": entity_name,
-                    "num_candidates": len(candidates_with_snippets),
-                    "mode": "truncated_metadata"
+                    "num_candidates": len(candidates)
                 }
             )
             
@@ -259,70 +217,6 @@ async def stage1a_value_matching(
             
             result = json.loads(result_text)
             relevant_titles = set(result.get('relevant_titles', []))
-            reasoning = result.get('reasoning', '')
-            
-            # STAGE 2: Fallback if insufficient information detected
-            needs_retry = (
-                not relevant_titles or  # No results
-                'insufficient' in reasoning.lower() or  # Explicit insufficient
-                'not enough' in reasoning.lower() or
-                'need more' in reasoning.lower() or
-                'unclear' in reasoning.lower()
-            )
-            
-            if needs_retry and len(matches) > 0:
-                # Retry with full metadata
-                candidates_full = prepare_candidates(matches, use_full_metadata=True)
-                
-                prompt_full = TITLE_FILTERING_PROMPT.replace('{{MAIN_QUERY}}', main_query or query)
-                prompt_full = prompt_full.replace('{{SUB_QUERY}}', query)
-                prompt_full = prompt_full.replace('{{ENTITY_NAME}}', entity_name)
-                prompt_full = prompt_full.replace('{{ENTITY_TYPE}}', entity_type or 'Unknown')
-                prompt_full = prompt_full.replace('{{ENTITY_SUBTYPE}}', entity_subtype or 'Unknown')
-                prompt_full = prompt_full.replace('{{COUNT}}', str(len(candidates_full)))
-                prompt_full = prompt_full.replace('{{CANDIDATES}}', json.dumps(candidates_full, indent=2, ensure_ascii=False))
-                
-                response_full = await client.chat.completions.create(
-                    model="openai/gpt-4o-mini",
-                    messages=[
-                        {"role": "user", "content": prompt_full}
-                    ],
-                    temperature=0.1,
-                    max_tokens=2048
-                )
-                
-                result_text_full = response_full.choices[0].message.content.strip()
-                
-                # Log fallback LLM interaction
-                log_llm_call(
-                    call_type="LLM Title Filtering (Stage 1-A, Full Metadata Fallback)",
-                    input_text=prompt_full,
-                    output_text=result_text_full,
-                    context={
-                        "query": query,
-                        "entity_name": entity_name,
-                        "num_candidates": len(candidates_full),
-                        "mode": "full_metadata",
-                        "reason": "insufficient_information_in_fast_mode"
-                    }
-                )
-                
-                # Parse fallback response
-                if result_text_full.startswith('```json'):
-                    result_text_full = result_text_full[7:]
-                if result_text_full.startswith('```'):
-                    result_text_full = result_text_full[3:]
-                if result_text_full.endswith('```'):
-                    result_text_full = result_text_full[:-3]
-                result_text_full = result_text_full.strip()
-                
-                result = json.loads(result_text_full)
-                relevant_titles = set(result.get('relevant_titles', []))
-                
-                # Mark that fallback was used
-                used_fallback = True
-            else:
-                used_fallback = False
             
             # Filter matches by relevant titles
             filtered_matches = [m for m in matches if m['title'] in relevant_titles]
@@ -331,8 +225,7 @@ async def stage1a_value_matching(
                 'stage': '1-A',
                 'initial_matches': initial_count,
                 'llm_filtered': len(filtered_matches),
-                'reasoning': result.get('reasoning', ''),
-                'used_full_metadata_fallback': used_fallback
+                'reasoning': result.get('reasoning', '')
             }
             
             return filtered_matches, filter_info
@@ -421,62 +314,37 @@ async def stage1b_type_filtering(
             'skipped': len(tried_types) == 0
         }
     
-    # Helper function to prepare candidates (same as Stage 1-A)
-    def prepare_candidates_1b(candidates, use_full_metadata=False):
-        """Prepare candidates with metadata snippets
+    # Prepare candidates with FULL metadata (no truncation, no fallback needed)
+    candidates = []
+    for c in all_candidates:
+        # Extract metadata
+        metadata_str = c.get('metadata', '')
+        if isinstance(metadata_str, str):
+            try:
+                metadata = json.loads(metadata_str)
+            except:
+                metadata = {}
+        else:
+            metadata = metadata_str or {}
         
-        Args:
-            candidates: List of candidate passages
-            use_full_metadata: If True, include full metadata without truncation
-        """
-        result = []
-        for c in candidates:
-            # Extract metadata
-            metadata_str = c.get('metadata', '')
-            if isinstance(metadata_str, str):
-                try:
-                    metadata = json.loads(metadata_str)
-                except:
-                    metadata = {}
-            else:
-                metadata = metadata_str or {}
-            
-            # Build matched content from metadata fields
-            content_parts = []
-            excluded_keys = {'title', 'type', 'subtype'}
-            
-            if use_full_metadata:
-                # FULL MODE: No truncation, all fields
-                for key, value in metadata.items():
-                    if key not in excluded_keys and value:
-                        value_str = str(value)
-                        content_parts.append(f"{key}: {value_str}")
-            else:
-                # FAST MODE: Truncated, priority fields only
-                priority_keys = ['relations', 'events', 'attributes', 'description']
-                for key in priority_keys:
-                    if key in metadata and metadata[key]:
-                        value_str = str(metadata[key])
-                        # relations: keep full, others: truncate
-                        if key == 'relations':
-                            content_parts.append(f"{key}: {value_str}")
-                        else:
-                            if len(value_str) > 200:
-                                value_str = value_str[:200] + "..."
-                            content_parts.append(f"{key}: {value_str}")
-            
-            matched_content = '\n'.join(content_parts) if content_parts else 'No metadata available'
-            
-            result.append({
-                'title': c['title'],
-                'type': c.get('type', 'Unknown'),
-                'subtype': c.get('subtype', 'Unknown'),
-                'matched_content': matched_content
-            })
-        return result
-    
-    # STAGE 1: Try with truncated metadata (fast)
-    candidates_with_snippets = prepare_candidates_1b(all_candidates, use_full_metadata=False)
+        # Build matched content from ALL metadata fields
+        content_parts = []
+        excluded_keys = {'title', 'type', 'subtype'}
+        
+        # Include ALL fields, no truncation
+        for key, value in metadata.items():
+            if key not in excluded_keys and value:
+                value_str = str(value)
+                content_parts.append(f"{key}: {value_str}")
+        
+        matched_content = '\n'.join(content_parts) if content_parts else 'No metadata available'
+        
+        candidates.append({
+            'title': c['title'],
+            'type': c.get('type', 'Unknown'),
+            'subtype': c.get('subtype', 'Unknown'),
+            'matched_content': matched_content
+        })
     
     # Format prompt for LLM (use first type as primary)
     primary_type = possible_types[0] if possible_types else {}
@@ -485,8 +353,8 @@ async def stage1b_type_filtering(
     prompt = prompt.replace('{{ENTITY_NAME}}', entity_name)
     prompt = prompt.replace('{{ENTITY_TYPE}}', primary_type.get('type', 'Unknown'))
     prompt = prompt.replace('{{ENTITY_SUBTYPE}}', primary_type.get('subtype', 'Unknown'))
-    prompt = prompt.replace('{{COUNT}}', str(len(candidates_with_snippets)))
-    prompt = prompt.replace('{{CANDIDATES}}', json.dumps(candidates_with_snippets, indent=2, ensure_ascii=False))
+    prompt = prompt.replace('{{COUNT}}', str(len(candidates)))
+    prompt = prompt.replace('{{CANDIDATES}}', json.dumps(candidates, indent=2, ensure_ascii=False))
     
     try:
         response = await client.chat.completions.create(
@@ -502,15 +370,14 @@ async def stage1b_type_filtering(
         
         # Log LLM interaction
         log_llm_call(
-            call_type="LLM Title Filtering (Stage 1-B, Fast Mode)",
+            call_type="LLM Title Filtering (Stage 1-B)",
             input_text=prompt,
             output_text=result_text,
             context={
                 "query": query,
                 "entity_name": entity_name,
-                "num_candidates": len(candidates_with_snippets),
-                "types": [f"{t.get('type', '')}/{t.get('subtype', '')}" for t in possible_types],
-                "mode": "truncated_metadata"
+                "num_candidates": len(candidates),
+                "types": [f"{t.get('type', '')}/{t.get('subtype', '')}" for t in possible_types]
             }
         )
         
@@ -525,71 +392,6 @@ async def stage1b_type_filtering(
         
         result = json.loads(result_text)
         relevant_titles = set(result.get('relevant_titles', []))
-        reasoning = result.get('reasoning', '')
-        
-        # STAGE 2: Fallback if insufficient information detected
-        needs_retry = (
-            not relevant_titles or  # No results
-            'insufficient' in reasoning.lower() or  # Explicit insufficient
-            'not enough' in reasoning.lower() or
-            'need more' in reasoning.lower() or
-            'unclear' in reasoning.lower()
-        )
-        
-        if needs_retry and len(all_candidates) > 0:
-            # Retry with full metadata
-            candidates_full = prepare_candidates_1b(all_candidates, use_full_metadata=True)
-            
-            prompt_full = TITLE_FILTERING_PROMPT.replace('{{MAIN_QUERY}}', main_query or query)
-            prompt_full = prompt_full.replace('{{SUB_QUERY}}', query)
-            prompt_full = prompt_full.replace('{{ENTITY_NAME}}', entity_name)
-            prompt_full = prompt_full.replace('{{ENTITY_TYPE}}', primary_type.get('type', 'Unknown'))
-            prompt_full = prompt_full.replace('{{ENTITY_SUBTYPE}}', primary_type.get('subtype', 'Unknown'))
-            prompt_full = prompt_full.replace('{{COUNT}}', str(len(candidates_full)))
-            prompt_full = prompt_full.replace('{{CANDIDATES}}', json.dumps(candidates_full, indent=2, ensure_ascii=False))
-            
-            response_full = await client.chat.completions.create(
-                model="openai/gpt-4o-mini",
-                messages=[
-                    {"role": "user", "content": prompt_full}
-                ],
-                temperature=0.1,
-                max_tokens=2048
-            )
-            
-            result_text_full = response_full.choices[0].message.content.strip()
-            
-            # Log fallback LLM interaction
-            log_llm_call(
-                call_type="LLM Title Filtering (Stage 1-B, Full Metadata Fallback)",
-                input_text=prompt_full,
-                output_text=result_text_full,
-                context={
-                    "query": query,
-                    "entity_name": entity_name,
-                    "num_candidates": len(candidates_full),
-                    "types": [f"{t.get('type', '')}/{t.get('subtype', '')}" for t in possible_types],
-                    "mode": "full_metadata",
-                    "reason": "insufficient_information_in_fast_mode"
-                }
-            )
-            
-            # Parse fallback response
-            if result_text_full.startswith('```json'):
-                result_text_full = result_text_full[7:]
-            if result_text_full.startswith('```'):
-                result_text_full = result_text_full[3:]
-            if result_text_full.endswith('```'):
-                result_text_full = result_text_full[:-3]
-            result_text_full = result_text_full.strip()
-            
-            result = json.loads(result_text_full)
-            relevant_titles = set(result.get('relevant_titles', []))
-            
-            # Mark that fallback was used
-            used_fallback = True
-        else:
-            used_fallback = False
         
         # Filter candidates by relevant titles
         filtered_passages = [c for c in all_candidates if c['title'] in relevant_titles]
@@ -599,8 +401,7 @@ async def stage1b_type_filtering(
             'type_candidates': len(all_candidates),
             'llm_filtered': len(filtered_passages),
             'tried_types': tried_types,
-            'reasoning': result.get('reasoning', ''),
-            'used_full_metadata_fallback': used_fallback
+            'reasoning': result.get('reasoning', '')
         }
         
         return filtered_passages, filter_info

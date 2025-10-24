@@ -7,8 +7,8 @@ from pathlib import Path
 
 # Default file paths (will try sensible fallbacks)
 DEFAULT_PRED_CANDIDATES = [
-    Path("multihop_pipeline_200_results.json"),
     Path("multihop_pipeline_200_checkpoint.json"),
+    Path("multihop_pipeline_200_results.json"),
     Path("Result/NaiveRAG/hotpot_result.json")
 ]
 DEFAULT_GOLD = Path("hotpotQA/qa.json")

@@ -13,58 +13,89 @@ You are a multi-hop retrieval-augmented assistant specializing in extracting pre
 
 ---Goal---
 Carefully read ALL the Information passages (both current and previous context) and extract the answer to the Sub-Question.
-Use ONLY the given Information. ONLY reply with "Insufficient information." if you have thoroughly checked ALL passages and cannot find the answer.
+Use ONLY the given Information. Be AGGRESSIVE in finding the answer - check every field, every sentence, every detail.
+
+---Critical Success Examples---
+Example 1:
+Question: "What is the title of the single by Cher that was written by Brian Higgins?"
+Passage: [1] Believe (Cher song)
+  description: "Believe" is a song by American singer Cher, written by Brian Higgins...
+Answer: "Believe" ✓ (Found in passage title AND description)
+
+Example 2:
+Question: "Which countries participated in the Baltic Cup?"
+Passage: [1] Baltic Cup (football)
+  events: The tournament featured Estonia, Latvia, Lithuania, and Belarus
+Answer: "Estonia, Latvia, Lithuania, Belarus" ✓ (Found in events field)
+
+Example 3:
+Question: "When was the album released?"
+Passage: [1] The Very Best of Cher
+  publication_date: 2003
+  main_entity: Compilation album released in 2003
+Answer: "2003" ✓ (Found in metadata fields)
+
+---Where to Look for Answers---
+1. **Passage Titles**: Often contain the answer directly (e.g., "Believe (Cher song)")
+2. **Description Field**: First place to check for detailed information
+3. **Main_entity Field**: Key facts about the entity
+4. **Attributes Fields**: Specific properties (dates, locations, measurements, etc.)
+5. **Events Field**: Historical facts, timeline information, relationships
+6. **Relations Field**: Connections to other entities
+7. **All Other Metadata**: Any field might contain the answer!
 
 ---Instructions---
 1. **Read ALL Passages Thoroughly**: 
-   - Examine BOTH current passages AND previous context passages
-   - Check all metadata fields: description, main_entity, attributes, events
-   - The answer might be in ANY of these locations
+   - Check EVERY passage (current + previous context)
+   - Look at EVERY metadata field, not just description
+   - The answer might be buried in ANY field
 
-2. **Extract Precisely**: 
-   - Find the exact answer from the passages
-   - Look for names, dates, places, values in all metadata fields
-   - Check attributes and events sections carefully
+2. **Start with Passage Titles**:
+   - Titles often contain entity names directly
+   - Example: "Believe (Cher song)" → if asked about Cher's song, the title IS the answer
 
-3. **Apply Simple Reasoning When Needed**:
-   - You CAN perform basic reasoning on passage information (e.g., arithmetic, temporal logic)
+3. **Scan All Metadata Fields**:
+   - description, main_entity, attributes, events, relations, etc.
+   - Dates in: publication_date, birth_date, founded, active_years
+   - Names in: main_entity, creator, director, members, related_entities
+   - Locations in: location, headquarters, country, region
+
+4. **Extract Precisely**: 
+   - Find exact values: names, dates, numbers, places
+   - Look for keywords from the question in ALL fields
+   - Match question terms to metadata field names
+
+5. **Apply Simple Reasoning When Needed**:
+   - You CAN perform basic reasoning (arithmetic, temporal logic)
    - Example: "seven years before 1999" → calculate 1992
-   - Example: "older brother of X" + "X born in 1980" → infer birth year relationship
-   - BUT do NOT use external knowledge - only reason about information IN the passages
+   - Example: "older brother of X" + "X born in 1980" → infer relationship
+   - BUT only reason about information IN the passages
 
-4. **Check Previous Context FIRST**:
-   - Previous context may already contain the answer
-   - Previous passages from earlier sub-questions are IMPORTANT
-   - The answer might be in previous passages, not just current ones
+6. **Check Previous Context FIRST**:
+   - Previous sub-question answers may already contain what you need
+   - Previous passages are just as important as current ones
 
-5. **Be Specific**: 
-   - Provide specific names, dates, places, or values
-   - NOT generic descriptions like "a plan" or "a person"
-   - Extract exact values from metadata
-
-6. **Stay Grounded**: 
-   - Base your answer on passage information
-   - You can REASON about the information (calculate, infer relationships)
-   - But do NOT add facts not derivable from the passages
+7. **Be Specific**: 
+   - Provide exact names, dates, places, or values
+   - NOT generic: "a plan", "a person", "a location"
+   - Extract EXACT values from metadata
 
 ---Response Format---
-- Provide a SHORT, DIRECT answer (typically 1-10 words)
+- SHORT, DIRECT answer (typically 1-10 words)
 - Use the same language as the Sub-Question
-- For names: Use full names if available (e.g., "Ferdinand Magellan" not just "Magellan")
-- For dates/numbers: Be precise (e.g., "1929" not "early 20th century")
-- For places: Use specific location names (e.g., "University Farm" not "a university")
+- For names: Use full names if available (e.g., "Ferdinand Magellan")
+- For dates: Be precise (e.g., "1998" not "late 1990s")
+- For lists: Include all relevant items (e.g., "Estonia, Latvia, Lithuania")
 
----Response Rules---
-✓ Answer must be based on passage information (but you can reason about it)
-✓ You CAN perform simple calculations, temporal logic, or relationship inference
-✓ Answer must be concise (max 15 words)
-✓ Check BOTH current passages AND previous context passages
-✓ Check ALL metadata fields (description, main_entity, attributes, events)
-✓ If passages contain structured data (JSON-like), extract exact values
-✗ Do NOT use external knowledge not present in passages
-✗ Do NOT provide explanations unless the question asks for them
-✗ Do NOT say "according to the passage" - just give the answer
-✗ Do NOT say "Insufficient information" without checking ALL passages thoroughly
+---CRITICAL: When to Say "Insufficient information"---
+ONLY respond "Insufficient information." if ALL of the following are true:
+✗ You checked EVERY passage (current + previous context)
+✗ You checked EVERY metadata field (title, description, main_entity, attributes, events, relations, ALL others)
+✗ You looked for keywords from the question in ALL fields
+✗ You cannot find the information OR derive it through simple reasoning
+✗ The passages genuinely do NOT contain the needed information
+
+If you find PARTIAL information or RELATED information, provide the closest match from the passages.
 
 ---Previous Context (IMPORTANT - May contain the answer!)---
 {{previous_context}}
@@ -76,10 +107,15 @@ Use ONLY the given Information. ONLY reply with "Insufficient information." if y
 {{subquestion}}
 
 ---Answer---
-Check ALL passages above (both current and previous context) thoroughly.
-You can perform simple reasoning on the passage information (e.g., "seven years before 1999" = 1992).
-Extract and provide ONLY the answer.
-If after checking ALL passages, metadata fields, and previous context you still cannot find or derive the answer, respond: "Insufficient information."
+CHECK THOROUGHLY:
+1. All passage TITLES (the answer might be in the title!)
+2. ALL metadata fields (description, main_entity, attributes, events, relations, etc.)
+3. Both CURRENT passages AND PREVIOUS context
+4. Look for exact matches of question keywords in field names and values
+
+Extract and provide ONLY the answer (max 15 words).
+You can perform simple reasoning on passage information.
+ONLY respond "Insufficient information." if you truly checked EVERYTHING and cannot find/derive the answer.
 """
 
 
@@ -91,20 +127,28 @@ You are a multi-hop retrieval-augmented assistant.
 
 ---Goal---
 Read ALL the Information passages (both current and previous context) and generate the correct answer to the Sub-Question.
-Use only the given Information; ONLY say "Insufficient information." if you have checked ALL passages and truly cannot find the answer.
+Be AGGRESSIVE in finding the answer - check passage titles, all metadata fields, and previous context.
+
+---Where to Look---
+1. **Passage Titles** - Often contain the answer directly
+2. **Description Field** - Primary source of information
+3. **ALL Metadata Fields** - attributes, events, relations, publication_date, etc.
+4. **Previous Context** - May already have the answer
 
 ---Target response length and format---
 - One-word or minimal-phrase answer (max 5 words).
 
 ---Response Rules---
-- Check BOTH current passages AND previous context passages thoroughly
-- Check ALL metadata fields: description, main_entity, attributes, events
-- You CAN perform simple reasoning (arithmetic, temporal logic, relationship inference)
-- Example: "2300 - 1000" → calculate 1300
-- Answer must be short and concise
-- Answer language must match the Sub-Question language
-- Do NOT use external knowledge not in passages
-- ONLY respond "Insufficient information." if you checked ALL available information and cannot find or derive the answer
+✓ Check passage TITLES first (answer might be in the title!)
+✓ Check ALL metadata fields thoroughly (description, main_entity, attributes, events, relations, etc.)
+✓ Check BOTH current passages AND previous context passages
+✓ You CAN perform simple reasoning (arithmetic, temporal logic, relationship inference)
+✓ Example: "2300 - 1000" → calculate 1300
+✓ If you find the information anywhere in passages, USE IT
+✗ Answer must be short and concise
+✗ Answer language must match the Sub-Question language
+✗ Do NOT use external knowledge not in passages
+✗ ONLY respond "Insufficient information." if you checked EVERY passage, EVERY field, and truly cannot find/derive the answer
 
 ---Previous Context (IMPORTANT - May contain the answer!)---
 {{previous_context}}
@@ -116,8 +160,8 @@ Use only the given Information; ONLY say "Insufficient information." if you have
 {{subquestion}}
 
 ---Answer---
-Check ALL passages (current + previous context) thoroughly.
-You can perform simple reasoning on passage information (e.g., temporal calculations).
+CHECK: 1) Passage titles, 2) All metadata fields, 3) Previous context, 4) Current passages
+You can perform simple reasoning on passage information.
 Provide only the answer (max 5 words). 
-If after checking ALL information you cannot find or derive the answer, respond "Insufficient information.".
+ONLY respond "Insufficient information." if you checked EVERYTHING and genuinely cannot find/derive the answer.
 """

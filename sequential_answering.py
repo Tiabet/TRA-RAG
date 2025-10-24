@@ -251,11 +251,13 @@ async def generate_answer_from_passages(
             # Build passage text
             passage_parts = [f"[{i}] {title}"]
             
-            # Include FULL metadata (no truncation)
-            for key in ['description', 'main_entity', 'attributes', 'events']:
-                if key in metadata and metadata[key]:
-                    value = str(metadata[key])  # FULL value, no truncation!
-                    passage_parts.append(f"  {key}: {value}")
+            # Include ALL metadata fields (no truncation, no field selection)
+            # This ensures we don't miss any important information!
+            excluded_keys = {'title', 'type', 'subtype'}  # Already shown separately
+            for key, value in metadata.items():
+                if key not in excluded_keys and value:
+                    value_str = str(value)  # FULL value, no truncation!
+                    passage_parts.append(f"  {key}: {value_str}")
             
             passage_texts.append('\n'.join(passage_parts))
         
@@ -626,11 +628,13 @@ async def synthesize_final_answer(
             # Build passage text
             passage_parts = [f"[{i}] {title}"]
             
-            # Include FULL metadata (no truncation)
-            for key in ['description', 'main_entity', 'attributes', 'events']:
-                if key in metadata and metadata[key]:
-                    value = str(metadata[key])  # FULL value, no truncation!
-                    passage_parts.append(f"  {key}: {value}")
+            # Include ALL metadata fields (no truncation, no field selection)
+            # This ensures we don't miss any important information!
+            excluded_keys = {'title', 'type', 'subtype'}  # Already shown separately
+            for key, value in metadata.items():
+                if key not in excluded_keys and value:
+                    value_str = str(value)  # FULL value, no truncation!
+                    passage_parts.append(f"  {key}: {value_str}")
             
             passage_texts.append('\n'.join(passage_parts))
         

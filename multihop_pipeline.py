@@ -169,19 +169,21 @@ async def process_multiple_questions(
     client: AsyncOpenAI,
     db: MetadataDB,
     questions: List[Dict],
-    max_workers: int = 10,
+    max_workers: int = 100,
+    batch_size: int = 42,
     use_fts: bool = True,
     apply_llm_filter_stage1a: bool = True,
     verbose: bool = False
 ) -> List[Dict]:
     """
-    Process multiple questions in parallel.
+    Process multiple questions in parallel with batching.
     
     Args:
         client: AsyncOpenAI client
         db: MetadataDB instance
         questions: List of question dicts
-        max_workers: Maximum concurrent questions (no API limit, can be high!)
+        max_workers: Maximum concurrent questions (default: 100, no API limit!)
+        batch_size: Number of questions per batch (default: 42)
         use_fts: Use FTS for retrieval
         apply_llm_filter_stage1a: Apply LLM filtering to Stage 1-A
         verbose: Print progress for each question
@@ -191,46 +193,62 @@ async def process_multiple_questions(
     """
     print(f"\n{'='*100}")
     print(f"Multi-hop Pipeline: Processing {len(questions)} questions")
+    print(f"Batch Size: {batch_size} questions/batch")
     print(f"Max Workers: {max_workers} (parallel question processing)")
+    print(f"Total Batches: {(len(questions) + batch_size - 1) // batch_size}")
     print(f"{'='*100}\n")
     
     start_time = time.time()
+    all_results = []
     
-    # Create semaphore to limit concurrent questions
-    semaphore = asyncio.Semaphore(max_workers)
-    
-    async def process_with_semaphore(question_data):
-        async with semaphore:
-            return await process_single_question(
-                client, db, question_data,
-                use_fts, apply_llm_filter_stage1a,
-                verbose
-            )
-    
-    # Process all questions in parallel (with max_workers limit)
-    results = await asyncio.gather(
-        *[process_with_semaphore(q) for q in questions],
-        return_exceptions=True
-    )
+    # Process in batches
+    for batch_idx in range(0, len(questions), batch_size):
+        batch = questions[batch_idx:batch_idx + batch_size]
+        batch_num = (batch_idx // batch_size) + 1
+        total_batches = (len(questions) + batch_size - 1) // batch_size
+        
+        print(f"\n{'='*100}")
+        print(f"Processing Batch {batch_num}/{total_batches} ({len(batch)} questions)")
+        print(f"{'='*100}")
+        
+        # Create semaphore to limit concurrent questions within this batch
+        semaphore = asyncio.Semaphore(max_workers)
+        
+        async def process_with_semaphore(question_data):
+            async with semaphore:
+                return await process_single_question(
+                    client, db, question_data,
+                    use_fts, apply_llm_filter_stage1a,
+                    verbose
+                )
+        
+        # Process all questions in this batch in parallel (with max_workers limit)
+        batch_results = await asyncio.gather(
+            *[process_with_semaphore(q) for q in batch],
+            return_exceptions=True
+        )
+        
+        # Handle exceptions
+        for i, result in enumerate(batch_results):
+            if isinstance(result, Exception):
+                all_results.append({
+                    'question_id': batch[i].get('_id', f'Q{batch_idx + i}'),
+                    'question': batch[i]['question'],
+                    'success': False,
+                    'error': str(result)
+                })
+            else:
+                all_results.append(result)
+        
+        # Batch summary
+        batch_successful = sum(1 for r in batch_results if not isinstance(r, Exception) and r.get('success', False))
+        print(f"\nBatch {batch_num} Complete: {batch_successful}/{len(batch)} successful")
     
     total_time = time.time() - start_time
     
-    # Handle exceptions
-    processed_results = []
-    for i, result in enumerate(results):
-        if isinstance(result, Exception):
-            processed_results.append({
-                'question_id': questions[i].get('_id', f'Q{i}'),
-                'question': questions[i]['question'],
-                'success': False,
-                'error': str(result)
-            })
-        else:
-            processed_results.append(result)
-    
     # Summary statistics
-    successful = [r for r in processed_results if r.get('success', False)]
-    failed = [r for r in processed_results if not r.get('success', False)]
+    successful = [r for r in all_results if r.get('success', False)]
+    failed = [r for r in all_results if not r.get('success', False)]
     
     print(f"\n{'='*100}")
     print("PIPELINE SUMMARY")
@@ -251,7 +269,7 @@ async def process_multiple_questions(
         print(f"  Answering: {avg_answering:.2f}s")
         print(f"  Synthesis: {avg_synthesis:.2f}s")
     
-    return processed_results
+    return all_results
 
 
 # Example usage and testing
@@ -309,7 +327,8 @@ if __name__ == "__main__":
         
         results = await process_multiple_questions(
             client, db, test_questions,
-            max_workers=5,  # Process 5 questions in parallel
+            max_workers=100,  # Process 100 questions in parallel
+            batch_size=42,    # 42 questions per batch
             use_fts=True,
             apply_llm_filter_stage1a=True,
             verbose=False  # Set to True to see detailed progress
