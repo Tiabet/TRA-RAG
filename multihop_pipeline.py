@@ -287,7 +287,7 @@ if __name__ == "__main__":
             base_url=os.getenv('ALICE_CHAT_URL')
         )
         
-        db = MetadataDB('metadata_v2.db')
+        db = MetadataDB('HotpotQA/metadata_v2.db')
         
         # Test question
         question_data = {
@@ -316,7 +316,7 @@ if __name__ == "__main__":
             base_url=os.getenv('ALICE_CHAT_URL')
         )
         
-        db = MetadataDB('metadata_v2.db')
+        db = MetadataDB('HotpotQA/metadata_v2.db')
         
         # Load sample questions
         with open('HotpotQA/hotpotqa_sample_200.json', 'r', encoding='utf-8') as f:

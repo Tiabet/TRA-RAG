@@ -10,7 +10,7 @@ from typing import List, Dict, Optional, Tuple
 
 
 class MetadataDB:
-    def __init__(self, db_path='metadata.db'):
+    def __init__(self, db_path='HotpotQA/metadata_v2.db'):
         """Initialize database connection"""
         self.conn = sqlite3.connect(db_path)
         self.conn.row_factory = sqlite3.Row  # Enable dict-like access

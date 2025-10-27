@@ -16,9 +16,12 @@ class LLMLogger:
         self.log_file = log_file
         self.call_counter = 0
         
+        # Create Results/Logs directory if it doesn't exist
+        os.makedirs("Results/Logs", exist_ok=True)
+        
         # Create new log file with timestamp
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.log_file = f"llm_log_{timestamp}.txt"
+        self.log_file = f"Results/Logs/llm_log_{timestamp}.txt"
         
         # Initialize log file
         with open(self.log_file, 'w', encoding='utf-8') as f:

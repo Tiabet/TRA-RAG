@@ -718,7 +718,7 @@ if __name__ == "__main__":
             base_url=os.getenv('ALICE_CHAT_URL')
         )
         
-        db_path = 'metadata_v2.db'
+        db_path = 'HotpotQA/metadata_v2.db'
         if not os.path.exists(db_path):
             print(f"❌ Database not found: {db_path}")
             return

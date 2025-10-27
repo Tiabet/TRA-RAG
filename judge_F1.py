@@ -7,11 +7,11 @@ from pathlib import Path
 
 # Default file paths (will try sensible fallbacks)
 DEFAULT_PRED_CANDIDATES = [
-    Path("multihop_pipeline_200_checkpoint.json"),
-    Path("multihop_pipeline_200_results.json"),
-    Path("Result/NaiveRAG/hotpot_result.json")
+    Path("Results/multihop_pipeline_200_results.json"),
+    Path("Results/multihop_pipeline_200_checkpoint.json"),
+    Path("NaiveRAG/hotpot_result.json")
 ]
-DEFAULT_GOLD = Path("hotpotQA/qa.json")
+DEFAULT_GOLD = Path("HotpotQA/qa.json")
 
 # ---------- text normalization ----------
 def normalize(s: str) -> str:
