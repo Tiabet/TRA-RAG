@@ -1,8 +1,22 @@
 """
-Test Multi-hop Pipeline on 200 Questions
-==========================================
-Complete evaluation with detailed result tracking.
-Now includes full LLM interaction logging.
+Run Multi-hop Pipeline on HotpotQA 200 Questions
+================================================
+Main execution script for evaluating the multi-hop QA pipeline
+on 200 sampled questions from HotpotQA dataset.
+
+Features:
+- Parallel processing with configurable workers
+- Automatic checkpoint saving every 10 questions
+- Complete LLM interaction logging
+- Detailed metrics and error analysis
+
+Output:
+- Results: Results/multihop_pipeline_200_results.json
+- Checkpoints: Results/multihop_pipeline_200_checkpoint.json
+- Logs: Results/Logs/llm_log_YYYYMMDD_HHMMSS.txt
+
+Usage:
+    python run_pipeline_200.py
 """
 
 import asyncio
@@ -260,7 +274,7 @@ async def evaluate_multihop_200(
         base_url=os.getenv('ALICE_CHAT_URL')
     )
     
-    db = MetadataDB('metadata_v2.db')
+    db = MetadataDB('HotpotQA/metadata_v2.db')
     
     # Create semaphore to limit concurrency
     semaphore = asyncio.Semaphore(max_workers)
@@ -274,7 +288,7 @@ async def evaluate_multihop_200(
     
     # Process all questions with progress bar and checkpoint saving
     print(f"Processing {len(questions)} questions with {max_workers} workers...\n")
-    print("Saving checkpoints every 10 questions to 'multihop_pipeline_200_checkpoint.json'\n")
+    print("Saving checkpoints every 10 questions to 'Results/multihop_pipeline_200_checkpoint.json'\n")
     
     # Create tasks
     tasks = [
@@ -285,7 +299,7 @@ async def evaluate_multihop_200(
     # Execute with progress tracking and checkpoint saving
     results = []
     checkpoint_interval = 10
-    checkpoint_file = 'multihop_pipeline_200_checkpoint.json'
+    checkpoint_file = 'Results/multihop_pipeline_200_checkpoint.json'
     
     for coro in tqdm(asyncio.as_completed(tasks), total=len(tasks), desc="Questions"):
         result = await coro
@@ -385,7 +399,7 @@ async def evaluate_multihop_200(
             print(f"   Error: {f.get('error', 'Unknown')}")
     
     # Save detailed results
-    output_file = 'multihop_pipeline_200_results.json'
+    output_file = 'Results/multihop_pipeline_200_results.json'
     print(f"\n{'='*100}")
     print(f"Saving detailed results to {output_file}...")
     print(f"{'='*100}")

@@ -5,6 +5,7 @@
 ```
 ChunkRAG_v2/
 ├── 📂 Core Modules (Root Level)
+│   ├── run_pipeline_200.py           # ⭐ Main: Run 200 HotpotQA questions
 │   ├── multihop_pipeline.py          # Main pipeline orchestrator
 │   ├── query_decomposition.py        # Query decomposition module
 │   ├── sequential_answering.py       # Sequential sub-question answering
@@ -69,8 +70,14 @@ ChunkRAG_v2/
 
 ## 🔧 Core Modules
 
-### Main Pipeline
-- **multihop_pipeline.py**: Orchestrates the entire multi-hop QA pipeline
+### Main Execution
+- **run_pipeline_200.py**: ⭐ **Main entry point** - Run pipeline on 200 HotpotQA questions
+  - Parallel processing with configurable workers
+  - Automatic checkpoint saving
+  - Complete logging and metrics
+
+### Pipeline Components
+- **multihop_pipeline.py**: Core pipeline orchestration
 - **query_decomposition.py**: Decomposes complex queries into sub-questions
 - **sequential_answering.py**: Answers sub-questions sequentially
 - **hybrid_retrieval.py**: Combines different retrieval strategies
@@ -134,10 +141,15 @@ All test files are archived in `tests_archive/`:
 
 ## 🚀 Quick Start
 
-### Run Main Pipeline
+### Run Main Pipeline (200 Questions)
 ```bash
-python multihop_pipeline.py
+python run_pipeline_200.py
 ```
+This will:
+- Process 200 HotpotQA questions with parallel workers
+- Save results to `Results/multihop_pipeline_200_results.json`
+- Save checkpoints every 10 questions
+- Log all LLM interactions to `Results/Logs/`
 
 ### Evaluate Results (Token-based)
 ```bash

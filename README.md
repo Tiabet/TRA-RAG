@@ -64,14 +64,26 @@ ALICE_OPENAI_KEY=your_api_key_here
 ALICE_CHAT_URL=https://your-api-endpoint/v1
 ```
 
-### 2. 테스트 실행
+### 2. 메인 파이프라인 실행
 
 ```bash
-# Hybrid retrieval 테스트 (200 queries)
-python test_hybrid_200.py
+# HotpotQA 200개 질문 처리
+python run_pipeline_200.py
 
-# 결과 분석
-python analyze_hybrid_200.py
+# 결과 파일:
+# - Results/multihop_pipeline_200_results.json (최종 결과)
+# - Results/multihop_pipeline_200_checkpoint.json (체크포인트)
+# - Results/Logs/llm_log_*.txt (LLM 로그)
+```
+
+### 3. 결과 평가
+
+```bash
+# Token-based 평가 (EM, F1, Precision, Recall)
+python judge_F1.py --pred Results/multihop_pipeline_200_results.json
+
+# LLM-based 평가 (GPT-4o-mini)
+python llm_evaluation.py --pred Results/multihop_pipeline_200_results.json
 ```
 
 ### 3. 사용 예시

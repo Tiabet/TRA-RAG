@@ -162,15 +162,16 @@
 - 총 68개 파일이 루트에 산재
 
 ### 정리 후 (루트 디렉토리)
-- **핵심 모듈만 유지**: 8개 Python 파일
-  1. multihop_pipeline.py
-  2. query_decomposition.py
-  3. sequential_answering.py
-  4. hybrid_retrieval.py
-  5. metadata_db.py
-  6. llm_logger.py
-  7. llm_evaluation.py
-  8. judge_F1.py
+- **핵심 모듈만 유지**: 9개 Python 파일
+  1. **run_pipeline_200.py** ⭐ (메인 실행 파일 - 200 HotpotQA 질문 처리)
+  2. multihop_pipeline.py
+  3. query_decomposition.py
+  4. sequential_answering.py
+  5. hybrid_retrieval.py
+  6. metadata_db.py
+  7. llm_logger.py
+  8. llm_evaluation.py
+  9. judge_F1.py
 
 - **문서**: 3개
   - README.md
@@ -214,8 +215,13 @@ output_path = 'Results/experiment_results.json'
 
 ### 2. 실행 명령어
 ```bash
-# 메인 파이프라인 실행
-python multihop_pipeline.py
+# 메인 파이프라인 실행 (200 HotpotQA 질문)
+python run_pipeline_200.py
+
+# 결과물:
+# - Results/multihop_pipeline_200_results.json
+# - Results/multihop_pipeline_200_checkpoint.json (체크포인트)
+# - Results/Logs/llm_log_*.txt (LLM 로그)
 
 # 평가 (Token-based)
 python judge_F1.py --pred Results/multihop_pipeline_200_results.json
@@ -241,3 +247,37 @@ python Analysis/compare_with_thrag.py
 ## ✨ 완료!
 
 프로젝트가 깔끔하게 정리되었습니다. 이제 더 효율적으로 실험하고 분석할 수 있습니다! 🎉
+
+---
+
+## 📝 추가 업데이트 (2025-10-27)
+
+### 메인 실행 파일 추가
+- **`tests_archive/test_multihop_200.py`** → **`run_pipeline_200.py`** (루트로 이동)
+- HotpotQA 200개 샘플 질문 처리를 위한 메인 실행 파일
+- 이름을 더 직관적으로 변경하여 프로젝트의 주 진입점임을 명확히 함
+
+### run_pipeline_200.py 업데이트
+```python
+# DB 경로 수정
+MetadataDB('HotpotQA/metadata_v2.db')
+
+# 출력 경로 수정
+checkpoint_file = 'Results/multihop_pipeline_200_checkpoint.json'
+output_file = 'Results/multihop_pipeline_200_results.json'
+
+# 문서 업데이트
+- 파일 설명 개선
+- 사용법 및 출력 파일 위치 명시
+```
+
+### 실행 방법
+```bash
+# 간단하게 실행
+python run_pipeline_200.py
+
+# 자동으로 생성되는 파일들:
+# 1. Results/multihop_pipeline_200_results.json      (최종 결과)
+# 2. Results/multihop_pipeline_200_checkpoint.json   (10개마다 체크포인트)
+# 3. Results/Logs/llm_log_YYYYMMDD_HHMMSS.txt       (LLM 로그)
+```
