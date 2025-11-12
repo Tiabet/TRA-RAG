@@ -3,9 +3,14 @@ Query Decomposition Module
 ============================
 Decomposes multi-hop questions into sequential sub-questions.
 
-Supports:
-- Bridge questions: Sequential dependency chain (SQ1 → SQ2 → SQ3)
-- Comparison questions: Parallel retrieval + synthesis (SQ1 + SQ2 → Compare)
+Type-Agnostic Approach:
+- Supports diverse reasoning patterns: compositional, comparison, inference, bridge, bridge_comparison, mixed
+- 2-4 hop questions (or more if needed)
+- Pure LLM-based decomposition without relying on question type labels
+
+Placeholder Syntax:
+- [SQ{N}_Answer]: HotpotQA, 2WikiMultihopQA format
+- #{N}: MuSiQue format (both are supported)
 """
 
 import json
@@ -59,12 +64,12 @@ class QueryDecomposition:
     def __init__(
         self,
         main_query: str,
-        question_type: str,
+        question_type: str,  # Type-agnostic: compositional, comparison, inference, bridge, bridge_comparison, etc.
         reasoning: str,
         subquestions: List[SubQuestion]
     ):
         self.main_query = main_query
-        self.question_type = question_type  # "bridge" or "comparison"
+        self.question_type = question_type
         self.reasoning = reasoning
         self.subquestions = subquestions
         
@@ -240,10 +245,14 @@ async def decompose_query(
 
 def substitute_answers(question: str, answered_subquestions: List[SubQuestion]) -> str:
     """
-    Substitute [SQ{N}_Answer] placeholders with actual answers.
+    Substitute [SQ{N}_Answer] or #{N} placeholders with actual answers.
+    
+    Supports two placeholder syntaxes:
+    - [SQ{N}_Answer]: HotpotQA, 2WikiMultihopQA format
+    - #{N}: MuSiQue format
     
     Args:
-        question: Question with placeholders like [SQ1_Answer], [SQ2_Answer]
+        question: Question with placeholders like [SQ1_Answer] or #1
         answered_subquestions: List of SubQuestion objects with answers
         
     Returns:
@@ -253,8 +262,19 @@ def substitute_answers(question: str, answered_subquestions: List[SubQuestion]) 
     
     for sq in answered_subquestions:
         if sq.answer:
-            placeholder = f"[{sq.id}_Answer]"
-            result = result.replace(placeholder, sq.answer)
+            # Replace [SQ{N}_Answer] format
+            placeholder_bracket = f"[{sq.id}_Answer]"
+            result = result.replace(placeholder_bracket, sq.answer)
+            
+            # Replace #{N} format (MuSiQue)
+            # Extract number from SQ{N}
+            if sq.id.startswith("SQ"):
+                try:
+                    num = sq.id[2:]  # Extract "1" from "SQ1"
+                    placeholder_hash = f"#{num}"
+                    result = result.replace(placeholder_hash, sq.answer)
+                except:
+                    pass
     
     return result
 
