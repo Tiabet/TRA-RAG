@@ -264,7 +264,7 @@ async def generate_answer_from_passages(
         passages_text = '\n\n'.join(passage_texts) if passage_texts else "No passages retrieved."
         
         # Choose prompt based on whether this is the final SQ
-        from Prompt.answer_short_v2 import (
+        from Prompt.answer import (
             DETAILED_SUBQUESTION_ANSWERING_PROMPT,
             FINAL_SUBQUESTION_ANSWERING_PROMPT
         )
