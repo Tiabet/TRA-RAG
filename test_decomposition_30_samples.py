@@ -156,13 +156,23 @@ async def main():
     for idx, (question, qtype) in enumerate(hotpotqa_samples, 1):
         label = f"HotpotQA_{idx:02d}"
         print(f"\n[{label}] Type: {qtype}")
-        print(f"Q: {question[:100]}..." if len(question) > 100 else f"Q: {question}")
+        try:
+            print(f"Q: {question[:100]}..." if len(question) > 100 else f"Q: {question}")
+        except UnicodeEncodeError:
+            print(f"Q: {question.encode('utf-8', errors='replace').decode('utf-8')[:100]}...")
         
         result = await test_decomposition(client, question, label, qtype)
         all_results.append(result)
         
         if result['success']:
             print(f"   -> Predicted: {result['predicted_type']}, {result['n_subquestions']} sub-questions")
+            # Print actual sub-questions
+            for sq in result['subquestions']:
+                deps = f" <- {', '.join(sq['depends_on'])}" if sq['depends_on'] else ""
+                try:
+                    print(f"      {sq['id']}: {sq['question']}{deps}")
+                except UnicodeEncodeError:
+                    print(f"      {sq['id']}: {sq['question'].encode('utf-8', errors='replace').decode('utf-8')}{deps}")
         else:
             print(f"   -> ERROR: {result['error']}")
         
@@ -175,13 +185,23 @@ async def main():
     for idx, (question, qtype) in enumerate(wiki2_samples, 1):
         label = f"2Wiki_{idx:02d}"
         print(f"\n[{label}] Type: {qtype}")
-        print(f"Q: {question[:100]}..." if len(question) > 100 else f"Q: {question}")
+        try:
+            print(f"Q: {question[:100]}..." if len(question) > 100 else f"Q: {question}")
+        except UnicodeEncodeError:
+            print(f"Q: {question.encode('utf-8', errors='replace').decode('utf-8')[:100]}...")
         
         result = await test_decomposition(client, question, label, qtype)
         all_results.append(result)
         
         if result['success']:
             print(f"   -> Predicted: {result['predicted_type']}, {result['n_subquestions']} sub-questions")
+            # Print actual sub-questions
+            for sq in result['subquestions']:
+                deps = f" <- {', '.join(sq['depends_on'])}" if sq['depends_on'] else ""
+                try:
+                    print(f"      {sq['id']}: {sq['question']}{deps}")
+                except UnicodeEncodeError:
+                    print(f"      {sq['id']}: {sq['question'].encode('utf-8', errors='replace').decode('utf-8')}{deps}")
         else:
             print(f"   -> ERROR: {result['error']}")
         
@@ -194,13 +214,23 @@ async def main():
     for idx, (question, qtype) in enumerate(musique_samples, 1):
         label = f"MuSiQue_{idx:02d}"
         print(f"\n[{label}] Hops: {qtype}")
-        print(f"Q: {question[:100]}..." if len(question) > 100 else f"Q: {question}")
+        try:
+            print(f"Q: {question[:100]}..." if len(question) > 100 else f"Q: {question}")
+        except UnicodeEncodeError:
+            print(f"Q: {question.encode('utf-8', errors='replace').decode('utf-8')[:100]}...")
         
         result = await test_decomposition(client, question, label, qtype)
         all_results.append(result)
         
         if result['success']:
             print(f"   -> Predicted: {result['predicted_type']}, {result['n_subquestions']} sub-questions")
+            # Print actual sub-questions
+            for sq in result['subquestions']:
+                deps = f" <- {', '.join(sq['depends_on'])}" if sq['depends_on'] else ""
+                try:
+                    print(f"      {sq['id']}: {sq['question']}{deps}")
+                except UnicodeEncodeError:
+                    print(f"      {sq['id']}: {sq['question'].encode('utf-8', errors='replace').decode('utf-8')}{deps}")
         else:
             print(f"   -> ERROR: {result['error']}")
         
