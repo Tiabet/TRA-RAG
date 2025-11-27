@@ -328,11 +328,11 @@ if __name__ == "__main__":
     import argparse
     
     parser = argparse.ArgumentParser(description="LLM-based answer evaluation")
-    parser.add_argument('--pred', type=Path, default=Path('test_new_pipeline_200_results_v2.json'),
+    parser.add_argument('--pred', type=Path, default=Path('Results/test_pipeline_v3_original_200_results.json'),
                        help='Path to predictions file')
     parser.add_argument('--gold', type=Path, default=Path('HotpotQA/qa.json'),
                        help='Path to gold answers file')
-    parser.add_argument('--out', type=Path, default=Path('Results/llm_evaluation_results_hotpot_200_v2.json'),
+    parser.add_argument('--out', type=Path, default=Path('Results/llm_evaluation_results_hotpot_200_v3.json'),
                        help='Path to output file')
     parser.add_argument('--model', type=str, default='openai/gpt-4o-mini',
                        help='OpenAI model to use for evaluation')

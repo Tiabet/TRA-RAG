@@ -1,16 +1,20 @@
 #!/usr/bin/env python3
 """
-New Multi-hop Pipeline v2
+New Multi-hop Pipeline v3
 ==========================
-Simplified pipeline using hybrid path retrieval.
+Same as v2 but uses original passages for answer generation instead of metadata.
+
+Key difference from v2:
+- Retrieval: Uses metadata-based hybrid search (same as v2)
+- Answer Generation: Uses original passages from HotpotQA context
 
 Pipeline:
 1. Query Decomposition (existing)
 2. For each SQ:
-   - Hybrid Search (BM25 + Dense) → Top-k paths
-   - Path → Original Passage mapping
-   - SQ Answering (passage-based)
-3. Final Answer: Main Query 답변 (모든 SQ의 unique passages 사용)
+   - Hybrid Search (BM25 + Dense) on metadata paths → Top-k titles
+   - Title → Original Passage mapping
+   - SQ Answering (original passage-based)
+3. Final Answer: Main Query 답변 (모든 SQ의 unique original passages 사용)
 """
 
 import asyncio
@@ -30,7 +34,7 @@ from query_decomposition import (
 )
 from hybrid_path_retriever import HybridPathRetriever
 
-# Import prompts from Prompt folder (same as sequential_answering.py)
+# Import prompts from Prompt folder
 from Prompt.answer import (
     DETAILED_SUBQUESTION_ANSWERING_PROMPT,
     FINAL_SUBQUESTION_ANSWERING_PROMPT
@@ -41,13 +45,14 @@ from Prompt.subquestion_answering_prompt import FINAL_ANSWER_SYNTHESIS_PROMPT
 from llm_logger import log_llm_call, log_llm_error
 
 
-class NewMultihopPipeline:
-    """New pipeline using hybrid path retrieval."""
+class NewMultihopPipelineV3:
+    """Pipeline using hybrid retrieval + original passages for answering."""
     
     def __init__(
         self,
         client: AsyncOpenAI,
         retriever: HybridPathRetriever,
+        hotpotqa_path: str = 'HotpotQA/hotpotqa_sample_200.json',
         db_path: str = 'HotpotQA/metadata_v3.db',
         top_k: int = 3,
         verbose: bool = True
@@ -56,8 +61,9 @@ class NewMultihopPipeline:
         Args:
             client: AsyncOpenAI client for LLM calls
             retriever: HybridPathRetriever instance
-            db_path: Path to metadata database (for full metadata lookup)
-            top_k: Number of paths to retrieve per query
+            hotpotqa_path: Path to original HotpotQA data (for original passages)
+            db_path: Path to metadata database (for metadata lookup, optional)
+            top_k: Number of passages to retrieve per query
             verbose: Print progress
         """
         self.client = client
@@ -66,9 +72,38 @@ class NewMultihopPipeline:
         self.top_k = top_k
         self.verbose = verbose
         
-        # Connect to database for full metadata lookup
+        # Load original passages indexed by title
+        self.original_passages = self._load_original_passages(hotpotqa_path)
+        if self.verbose:
+            print(f"✓ Loaded {len(self.original_passages)} original passages")
+        
+        # Connect to database for metadata lookup (optional, for debugging)
         self.conn = sqlite3.connect(db_path)
         self.conn.row_factory = sqlite3.Row
+    
+    def _load_original_passages(self, hotpotqa_path: str) -> Dict[str, str]:
+        """
+        Load original passages from HotpotQA and index by title.
+        
+        Returns:
+            Dict mapping title -> concatenated passage text
+        """
+        with open(hotpotqa_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        
+        passages = {}
+        for item in data:
+            for title, sentences in item.get('context', []):
+                if title not in passages:
+                    # Concatenate sentences into full passage
+                    full_text = ''.join(sentences).strip()
+                    passages[title] = full_text
+        
+        return passages
+    
+    def get_original_passage(self, title: str) -> Optional[str]:
+        """Get original passage text for a title."""
+        return self.original_passages.get(title)
     
     def get_full_metadata(self, title: str) -> Optional[Dict]:
         """Get full metadata for a title from database."""
@@ -85,16 +120,15 @@ class NewMultihopPipeline:
     async def retrieve_for_query(self, query: str) -> List[Dict]:
         """
         Retrieve passages for a query using hybrid search.
-        Ensures top_k unique titles are returned.
+        Returns top_k unique titles with their original passages.
         
         Args:
             query: The query text
             
         Returns:
-            List of passage dicts with title and full metadata (top_k unique titles)
+            List of passage dicts with title, original_passage, and metadata
         """
         # Request more paths to ensure we get enough unique titles
-        # Fetch up to 10x top_k paths to find enough unique titles
         fetch_k = self.top_k * 10
         paths = await self.retriever.search_hybrid(query, top_k=fetch_k)
         
@@ -111,11 +145,15 @@ class NewMultihopPipeline:
                 continue
             seen_titles.add(title)
             
-            # Get full metadata
+            # Get original passage
+            original_passage = self.get_original_passage(title)
+            
+            # Get metadata (for reference)
             metadata = self.get_full_metadata(title)
             
             passages.append({
                 'title': title,
+                'original_passage': original_passage,
                 'metadata': metadata,
                 'matched_path': path['key_path'],
                 'matched_value': path['value'],
@@ -136,7 +174,7 @@ class NewMultihopPipeline:
         for dep_id in current_sq.depends_on:
             dep_sq = decomposition.get_subquestion(dep_id)
             if dep_sq and dep_sq.answer:
-                context_parts.append(f"{dep_sq.id}: {dep_sq.question}")
+                context_parts.append(f"{dep_id}: {dep_sq.question}")
                 context_parts.append(f"Answer: {dep_sq.answer}")
                 context_parts.append("")
         
@@ -169,7 +207,7 @@ class NewMultihopPipeline:
         all_passages: List[Dict]
     ) -> str:
         """
-        Generate final answer for main query using all collected passages.
+        Generate final answer for main query using all collected original passages.
         """
         # Build sub-question chain
         chain_parts = []
@@ -179,20 +217,17 @@ class NewMultihopPipeline:
             chain_parts.append("")
         subquestion_chain = '\n'.join(chain_parts)
         
-        # Format passages
+        # Format passages using ORIGINAL passages
         passage_texts = []
         for i, p in enumerate(all_passages, 1):
-            parts = [f"[{i}] {p['title']}"]
+            title = p['title']
+            original_text = p.get('original_passage', '')
             
-            if p.get('metadata'):
-                metadata = p['metadata']
-                excluded_keys = {'title', 'type', 'subtype'}
-                for key, value in metadata.items():
-                    if key not in excluded_keys and value:
-                        value_str = str(value) if not isinstance(value, (dict, list)) else json.dumps(value, ensure_ascii=False)
-                        parts.append(f"  {key}: {value_str}")
-            
-            passage_texts.append('\n'.join(parts))
+            if original_text:
+                passage_texts.append(f"[{i}] {title}\n{original_text}")
+            else:
+                # Fallback to metadata if original not available
+                passage_texts.append(f"[{i}] {title}\n(No original passage available)")
         
         passages_text = '\n\n'.join(passage_texts) if passage_texts else "No passages."
         
@@ -215,7 +250,7 @@ class NewMultihopPipeline:
         
         # Log the LLM call
         log_llm_call(
-            call_type="Final Answer Synthesis",
+            call_type="Final Answer Synthesis (V3-Original)",
             input_text=prompt,
             output_text=answer,
             context={"main_query": main_query, "num_passages": len(all_passages)}
@@ -233,15 +268,7 @@ class NewMultihopPipeline:
         is_final_sq: bool = False
     ) -> Dict:
         """
-        Answer a single sub-question.
-        
-        Args:
-            sq: SubQuestion to answer
-            decomposition: Full decomposition for context
-            is_final_sq: Whether this is the final sub-question
-            
-        Returns:
-            Dict with success, answer, passages, etc.
+        Answer a single sub-question using original passages.
         """
         try:
             # Substitute placeholders
@@ -250,15 +277,16 @@ class NewMultihopPipeline:
             # Build simple previous context (only answers, no passages)
             previous_context = self._build_simple_previous_context(sq, decomposition)
             
-            # Retrieve passages
+            # Retrieve passages (with original text)
             passages = await self.retrieve_for_query(actual_question)
             
             if self.verbose:
                 print(f"\n   Retrieved {len(passages)} passages:")
                 for p in passages:
-                    print(f"     - {p['title']} (path: {p['matched_path']}, score: {p['score']:.3f})")
+                    has_original = "✓" if p.get('original_passage') else "✗"
+                    print(f"     - {p['title']} (original: {has_original}, score: {p['score']:.3f})")
             
-            # Generate answer (using is_final_sq)
+            # Generate answer using original passages
             answer = await self.generate_answer(
                 actual_question,
                 passages,
@@ -293,69 +321,60 @@ class NewMultihopPipeline:
         is_final_sq: bool = False
     ) -> str:
         """
-        Generate answer from passages using LLM.
-        Uses the same prompts as sequential_answering.py.
+        Generate answer from ORIGINAL passages using LLM.
         """
         
-        # Format passages (same format as sequential_answering.py)
+        # Format passages using ORIGINAL text
         passage_texts = []
         for i, p in enumerate(passages, 1):
-            parts = [f"[{i}] {p['title']}"]
+            title = p['title']
+            original_text = p.get('original_passage', '')
             
-            # Include full metadata (excluding type/subtype)
-            if p['metadata']:
-                metadata = p['metadata']
-                excluded_keys = {'title', 'type', 'subtype'}
-                for key, value in metadata.items():
-                    if key not in excluded_keys and value:
-                        value_str = str(value) if not isinstance(value, (dict, list)) else json.dumps(value, ensure_ascii=False)
-                        parts.append(f"  {key}: {value_str}")
-            
-            passage_texts.append('\n'.join(parts))
+            if original_text:
+                passage_texts.append(f"[{i}] {title}\n{original_text}")
+            else:
+                # Fallback to metadata if no original passage
+                if p.get('metadata'):
+                    metadata = p['metadata']
+                    parts = [f"[{i}] {title}"]
+                    excluded_keys = {'title', 'type', 'subtype'}
+                    for key, value in metadata.items():
+                        if key not in excluded_keys and value:
+                            value_str = str(value) if not isinstance(value, (dict, list)) else json.dumps(value, ensure_ascii=False)
+                            parts.append(f"  {key}: {value_str}")
+                    passage_texts.append('\n'.join(parts))
+                else:
+                    passage_texts.append(f"[{i}] {title}\n(No content available)")
         
         passages_text = '\n\n'.join(passage_texts) if passage_texts else "No passages retrieved."
         
-        # Choose prompt based on whether this is the final SQ (same as sequential_answering.py)
+        # Choose prompt based on is_final_sq
         if is_final_sq:
-            prompt = FINAL_SUBQUESTION_ANSWERING_PROMPT.replace(
-                "{{subquestion}}", question
-            )
+            prompt_template = FINAL_SUBQUESTION_ANSWERING_PROMPT
         else:
-            prompt = DETAILED_SUBQUESTION_ANSWERING_PROMPT.replace(
-                "{{subquestion}}", question
-            )
+            prompt_template = DETAILED_SUBQUESTION_ANSWERING_PROMPT
         
+        # Fill in the prompt
+        prompt = prompt_template.replace("{{subquestion}}", question)
         prompt = prompt.replace("{{passages}}", passages_text)
-        prompt = prompt.replace(
-            "{{previous_context}}", 
-            previous_context if previous_context else "(None)"
-        )
-        prompt = prompt.replace(
-            "{{main_query}}", 
-            main_query if main_query else "(No main query provided)"
-        )
-        
-        # LLM call
-        max_tokens = 100 if is_final_sq else 200
+        prompt = prompt.replace("{{previous_context}}", previous_context if previous_context else "None")
+        prompt = prompt.replace("{{main_query}}", main_query)
         
         response = await self.client.chat.completions.create(
             model="openai/gpt-4o-mini",
             messages=[
-                {
-                    "role": "system",
-                    "content": "You are a precise question answering system. Give short, direct answers."
-                },
+                {"role": "system", "content": "You are a precise question answering system."},
                 {"role": "user", "content": prompt}
             ],
             temperature=0.1,
-            max_tokens=max_tokens
+            max_tokens=150
         )
         
         answer = response.choices[0].message.content.strip()
         
         # Log the LLM call
         log_llm_call(
-            call_type="Subquestion Answering",
+            call_type="Subquestion Answering (V3-Original)",
             input_text=prompt,
             output_text=answer,
             context={
@@ -366,7 +385,7 @@ class NewMultihopPipeline:
             }
         )
         
-        # Clean up answer
+        # Clean up answer format
         if answer.startswith("Answer:"):
             answer = answer[7:].strip()
         
@@ -374,136 +393,126 @@ class NewMultihopPipeline:
     
     async def process_question(self, question: str) -> Dict:
         """
-        Process a single question through the full pipeline.
-        
-        Args:
-            question: The main question
-            
-        Returns:
-            Dict with results
+        Process a multi-hop question end-to-end using original passages.
         """
         start_time = time.time()
         
-        if self.verbose:
-            print(f"\n{'='*80}")
-            print(f"Processing: {question}")
-            print(f"{'='*80}")
-        
-        # Step 1: Query Decomposition
-        if self.verbose:
-            print(f"\n[Step 1] Query Decomposition...")
-        
-        decomp_result = await decompose_query(self.client, question)
-        
-        if not decomp_result['success']:
-            return {
-                'success': False,
-                'error': f"Decomposition failed: {decomp_result.get('error')}"
-            }
-        
-        decomposition = decomp_result['decomposition']
-        
-        if self.verbose:
-            print(f"   Type: {decomposition.question_type}")
-            print(f"   Sub-questions: {len(decomposition.subquestions)}")
-            for sq in decomposition.subquestions:
-                deps = f" [depends: {', '.join(sq.depends_on)}]" if sq.depends_on else ""
-                print(f"     {sq.id}: {sq.question}{deps}")
-        
-        # Step 2: Answer sub-questions
-        if self.verbose:
-            print(f"\n[Step 2] Answering Sub-Questions...")
-        
-        batches = get_execution_order(decomposition)
-        total_batches = len(batches)
-        
-        for batch_idx, batch in enumerate(batches, 1):
-            is_final_batch = (batch_idx == total_batches)
+        try:
+            # Step 1: Decompose query
+            if self.verbose:
+                print(f"\n{'='*60}")
+                print(f"Question: {question}")
+                print(f"{'='*60}")
+                print("\n[1] Decomposing query...")
+            
+            decomp_result = await decompose_query(self.client, question)
+            
+            if not decomp_result['success']:
+                return {
+                    'success': False,
+                    'error': f"Decomposition failed: {decomp_result.get('error')}",
+                    'time': time.time() - start_time
+                }
+            
+            decomposition = decomp_result['decomposition']
             
             if self.verbose:
-                print(f"\n   Batch {batch_idx}/{total_batches}: {batch}")
+                print(f"   Main query: {decomposition.main_query}")
+                print(f"   Sub-questions: {len(decomposition.subquestions)}")
+                for sq in decomposition.subquestions:
+                    deps = f" (depends: {sq.depends_on})" if sq.depends_on else ""
+                    print(f"     {sq.id}: {sq.question}{deps}")
             
-            if len(batch) == 1:
-                # Sequential
-                sq_id = batch[0]
-                sq = decomposition.get_subquestion(sq_id)
-                is_final_sq = is_final_batch  # Last batch = final SQ
+            # Step 2: Answer sub-questions in order
+            batches = get_execution_order(decomposition)
+            
+            if self.verbose:
+                print(f"\n[2] Answering sub-questions in {len(batches)} batches...")
+            
+            total_batches = len(batches)
+            for batch_idx, batch in enumerate(batches, 1):
+                is_final_batch = (batch_idx == total_batches)
                 
-                if self.verbose:
-                    sq_label = " [FINAL]" if is_final_sq else ""
-                    print(f"\n   {sq.id}: {sq.question}{sq_label}")
-                
-                result = await self.answer_subquestion(sq, decomposition, is_final_sq=is_final_sq)
-                
-                if self.verbose:
-                    if result['success']:
-                        print(f"   ✓ Answer: {result['answer']}")
-                    else:
-                        print(f"   ✗ Error: {result.get('error')}")
-            else:
-                # Parallel
-                tasks = []
                 for sq_id in batch:
                     sq = decomposition.get_subquestion(sq_id)
-                    is_final_sq = is_final_batch
-                    tasks.append(self.answer_subquestion(sq, decomposition, is_final_sq=is_final_sq))
+                    is_final = is_final_batch and (sq_id == batch[-1])
                 
-                results = await asyncio.gather(*tasks, return_exceptions=True)
-                
-                for sq_id, result in zip(batch, results):
-                    sq = decomposition.get_subquestion(sq_id)
                     if self.verbose:
-                        print(f"\n   {sq.id}: {sq.question}")
-                        if isinstance(result, Exception):
-                            print(f"   ✗ Error: {result}")
-                        elif result['success']:
-                            print(f"   ✓ Answer: {result['answer']}")
-                        else:
-                            print(f"   ✗ Error: {result.get('error')}")
-        
-        # Step 3: Final Answer - Answer Main Query with all unique passages
-        all_passages = self._collect_all_unique_passages(decomposition)
-        
-        if self.verbose:
-            print(f"\n[Step 3] Final Answer (Main Query with {len(all_passages)} unique passages)")
-        
-        final_answer = await self.generate_final_answer(
-            main_query=question,
-            decomposition=decomposition,
-            all_passages=all_passages
-        )
-        
-        total_time = time.time() - start_time
-        
-        if self.verbose:
-            print(f"\n{'='*80}")
-            print(f"FINAL ANSWER: {final_answer}")
-            print(f"Time: {total_time:.2f}s | Passages used: {len(all_passages)}")
-            print(f"{'='*80}")
-        
-        return {
-            'success': True,
-            'question': question,
-            'final_answer': final_answer,
-            'decomposition': decomposition.to_dict(),
-            'time': total_time,
-            'num_passages': len(all_passages)
-        }
+                        print(f"\n   --- {sq_id} ---")
+                        print(f"   Q: {sq.question}")
+                
+                    result = await self.answer_subquestion(sq, decomposition, is_final_sq=is_final)
+                
+                    if result['success']:
+                        if self.verbose:
+                            print(f"   A: {result['answer']}")
+                    else:
+                        if self.verbose:
+                            print(f"   Error: {result['error']}")
+            
+            # Step 3: Generate final answer
+            if self.verbose:
+                print(f"\n[3] Generating final answer...")
+            
+            all_passages = self._collect_all_unique_passages(decomposition)
+            final_answer = await self.generate_final_answer(
+                decomposition.main_query,
+                decomposition,
+                all_passages
+            )
+            
+            elapsed = time.time() - start_time
+            
+            if self.verbose:
+                print(f"\n{'='*60}")
+                print(f"Final Answer: {final_answer}")
+                print(f"Time: {elapsed:.2f}s | Passages: {len(all_passages)}")
+                print(f"{'='*60}")
+            
+            return {
+                'success': True,
+                'final_answer': final_answer,
+                'decomposition': {
+                    'main_query': decomposition.main_query,
+                    'subquestions': [
+                        {
+                            'id': sq.id,
+                            'question': sq.question,
+                            'answer': sq.answer,
+                            'depends_on': sq.depends_on
+                        }
+                        for sq in decomposition.subquestions
+                    ]
+                },
+                'num_passages': len(all_passages),
+                'time': elapsed
+            }
+            
+        except Exception as e:
+            elapsed = time.time() - start_time
+            if self.verbose:
+                print(f"\nError: {e}")
+            return {
+                'success': False,
+                'error': str(e),
+                'time': elapsed
+            }
     
     def close(self):
         """Close database connection."""
-        self.conn.close()
+        if self.conn:
+            self.conn.close()
 
 
+# Test function
 async def test_pipeline():
-    """Test the new pipeline with HotpotQA questions."""
+    """Quick test of the v3 pipeline."""
     import os
     from dotenv import load_dotenv
-    
     load_dotenv()
     
     print("="*80)
-    print("Testing New Multi-hop Pipeline v2")
+    print("Testing New Multi-hop Pipeline v3 (Original Passages)")
     print("="*80)
     
     # Initialize components
@@ -517,7 +526,7 @@ async def test_pipeline():
         dense_weight=0.6
     )
     
-    pipeline = NewMultihopPipeline(
+    pipeline = NewMultihopPipelineV3(
         client=client,
         retriever=retriever,
         top_k=3,

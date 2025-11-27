@@ -3,21 +3,44 @@ Upper Bound Experiments
 ========================
 Experiment 1: Perfect Retrieval with Metadata
 Experiment 2: Perfect Retrieval with Original Passages
+
+Usage:
+    python upper_bound_experiment.py                     # Default: HotpotQA
+    python upper_bound_experiment.py --dataset hotpotqa  # HotpotQA
+    python upper_bound_experiment.py --dataset musique   # MuSiQue
 """
 
 import json
 import asyncio
 import os
 import time
+import argparse
+from pathlib import Path
 from dotenv import load_dotenv
 from openai import AsyncOpenAI
 
 load_dotenv()
 
 # ==================== HYPERPARAMETERS ====================
-CONCURRENCY = 10
+CONCURRENCY = 50
 MODEL = "openai/gpt-4o-mini"
 # =========================================================
+
+# Dataset configurations
+DATASET_CONFIGS = {
+    'hotpotqa': {
+        'data_path': 'HotpotQA/hotpotqa_sample_200.json',
+        'db_path': 'HotpotQA/metadata_v3.db',
+        'result_metadata': 'Results/upper_bound_metadata_results.json',
+        'result_original': 'Results/upper_bound_original_results.json',
+    },
+    'musique': {
+        'data_path': 'MuSiQue/musique_sample_200.json',
+        'db_path': 'MuSiQue/metadata_v3.db',
+        'result_metadata': 'Results/upper_bound_musique_metadata_results.json',
+        'result_original': 'Results/upper_bound_musique_original_results.json',
+    }
+}
 
 # Initialize client
 client = AsyncOpenAI(
@@ -80,6 +103,7 @@ async def process_question_metadata(sample: dict, metadata_db: dict, semaphore: 
     async with semaphore:
         question = sample["question"]
         gold_answer = sample["answer"]
+        qid = sample.get("_id", "")
         
         # Get supporting fact titles
         sf_titles = list(set([sf[0] for sf in sample["supporting_facts"]]))
@@ -97,9 +121,11 @@ async def process_question_metadata(sample: dict, metadata_db: dict, semaphore: 
         
         if not passages_text:
             return {
+                "id": qid,
                 "question": question,
                 "gold_answer": gold_answer,
                 "predicted_answer": "Insufficient information.",
+                "answer_aliases": sample.get("answer_aliases", []),
                 "sf_titles": sf_titles,
                 "found_titles": found_titles,
                 "success": False
@@ -109,9 +135,11 @@ async def process_question_metadata(sample: dict, metadata_db: dict, semaphore: 
         predicted = await call_llm(prompt)
         
         return {
+            "id": qid,
             "question": question,
             "gold_answer": gold_answer,
             "predicted_answer": predicted,
+            "answer_aliases": sample.get("answer_aliases", []),
             "sf_titles": sf_titles,
             "found_titles": found_titles,
             "success": True
@@ -123,6 +151,7 @@ async def process_question_original(sample: dict, semaphore: asyncio.Semaphore) 
     async with semaphore:
         question = sample["question"]
         gold_answer = sample["answer"]
+        qid = sample.get("_id", "")
         
         # Get supporting fact titles and sentence indices
         sf_info = {}  # title -> set of sentence indices
@@ -140,14 +169,16 @@ async def process_question_original(sample: dict, semaphore: asyncio.Semaphore) 
             if title in context_dict:
                 sentences = context_dict[title]
                 # Get all sentences from the passage (not just supporting fact sentences)
-                full_passage = "".join(sentences)
+                full_passage = "".join(sentences) if isinstance(sentences, list) else sentences
                 passages_text += f"[{i}] {title}\n{full_passage}\n\n"
         
         if not passages_text:
             return {
+                "id": qid,
                 "question": question,
                 "gold_answer": gold_answer,
                 "predicted_answer": "Insufficient information.",
+                "answer_aliases": sample.get("answer_aliases", []),
                 "sf_titles": list(sf_info.keys()),
                 "success": False
             }
@@ -156,9 +187,11 @@ async def process_question_original(sample: dict, semaphore: asyncio.Semaphore) 
         predicted = await call_llm(prompt)
         
         return {
+            "id": qid,
             "question": question,
             "gold_answer": gold_answer,
             "predicted_answer": predicted,
+            "answer_aliases": sample.get("answer_aliases", []),
             "sf_titles": list(sf_info.keys()),
             "success": True
         }
@@ -190,11 +223,10 @@ async def run_experiment_original(samples: list):
     return results
 
 
-def load_metadata_db():
+def load_metadata_db(db_path: str):
     """Load metadata from database"""
     import sqlite3
     
-    db_path = "HotpotQA/metadata_v3.db"
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
     
@@ -206,18 +238,43 @@ def load_metadata_db():
         metadata_db[title] = json.loads(metadata_json)
     
     conn.close()
-    print(f"Loaded {len(metadata_db)} metadata entries")
+    print(f"Loaded {len(metadata_db)} metadata entries from {db_path}")
     return metadata_db
 
 
+def parse_args():
+    """Parse command line arguments."""
+    parser = argparse.ArgumentParser(description='Upper Bound Experiments for multi-hop QA')
+    parser.add_argument('--dataset', type=str, default='hotpotqa',
+                        choices=['hotpotqa', 'musique'],
+                        help='Dataset to use (default: hotpotqa)')
+    return parser.parse_args()
+
+
 async def main():
+    args = parse_args()
+    dataset = args.dataset.lower()
+    config = DATASET_CONFIGS[dataset]
+    
+    print("=" * 80)
+    print(f"Upper Bound Experiments - {dataset.upper()}")
+    print("=" * 80)
+    
     # Load samples
-    with open("HotpotQA/hotpotqa_sample_200.json", "r", encoding="utf-8") as f:
+    with open(config['data_path'], "r", encoding="utf-8") as f:
         samples = json.load(f)
-    print(f"Loaded {len(samples)} samples")
+    print(f"Loaded {len(samples)} samples from {config['data_path']}")
+    
+    # Analyze hop distribution (for MuSiQue)
+    if dataset == 'musique':
+        hop_dist = {}
+        for item in samples:
+            hop = item['_id'].split('hop')[0]
+            hop_dist[hop] = hop_dist.get(hop, 0) + 1
+        print(f"Hop distribution: {hop_dist}")
     
     # Load metadata
-    metadata_db = load_metadata_db()
+    metadata_db = load_metadata_db(config['db_path'])
     
     # Check how many supporting facts are in metadata
     total_sf = 0
@@ -230,6 +287,9 @@ async def main():
                 found_sf += 1
     print(f"Supporting facts coverage: {found_sf}/{total_sf} ({found_sf/total_sf*100:.1f}%)")
     
+    # Ensure Results directory exists
+    Path('Results').mkdir(parents=True, exist_ok=True)
+    
     # Run Experiment 1: Metadata
     print("\n" + "=" * 60)
     start_time = time.time()
@@ -237,9 +297,10 @@ async def main():
     time_metadata = time.time() - start_time
     
     # Save results
-    with open("Results/upper_bound_metadata_results.json", "w", encoding="utf-8") as f:
+    with open(config['result_metadata'], "w", encoding="utf-8") as f:
         json.dump({
-            "experiment": "Perfect Retrieval with Metadata",
+            "experiment": f"{dataset.upper()} Perfect Retrieval with Metadata",
+            "dataset": dataset,
             "model": MODEL,
             "total": len(results_metadata),
             "time": time_metadata,
@@ -254,9 +315,10 @@ async def main():
     time_original = time.time() - start_time
     
     # Save results
-    with open("Results/upper_bound_original_results.json", "w", encoding="utf-8") as f:
+    with open(config['result_original'], "w", encoding="utf-8") as f:
         json.dump({
-            "experiment": "Perfect Retrieval with Original Passages",
+            "experiment": f"{dataset.upper()} Perfect Retrieval with Original Passages",
+            "dataset": dataset,
             "model": MODEL,
             "total": len(results_original),
             "time": time_original,
@@ -267,10 +329,13 @@ async def main():
     print("\n" + "=" * 60)
     print("EXPERIMENTS COMPLETED")
     print("=" * 60)
+    print(f"Dataset: {dataset.upper()}")
     print(f"Results saved to:")
-    print(f"  - Results/upper_bound_metadata_results.json")
-    print(f"  - Results/upper_bound_original_results.json")
-    print(f"\nRun llm_evaluation.py on these results to get accuracy scores.")
+    print(f"  - {config['result_metadata']}")
+    print(f"  - {config['result_original']}")
+    print(f"\nRun evaluation:")
+    print(f"  python evaluate_mrqa.py {config['result_metadata']}")
+    print(f"  python evaluate_mrqa.py {config['result_original']}")
 
 
 if __name__ == "__main__":

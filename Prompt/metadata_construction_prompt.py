@@ -1,11 +1,14 @@
-from Prompt.type_schema import ENTITY_TYPE_SCHEMA
+"""
+Metadata Construction Prompt (Simplified - No Type/Subtype Schema)
+==================================================================
+Type/subtype 스키마 없이 자유로운 형식으로 메타데이터 추출
+"""
 
-# Construct the prompt with schema insertion
-_prompt_template = """
+metadata_construction_prompt = """
 You are an expert metadata extraction engine specialized in transforming natural language passages into fully structured JSON metadata objects.
 
-You will be given a passage that describes one or more entities such as people, organizations, locations, works of art, events, products, biological entities, or concepts.  
-Your task is to extract **ALL information without ANY omission** and convert it into a structured metadata JSON following the schema below.
+You will be given a passage that describes one or more entities such as people, organizations, locations, works of art, events, products, or concepts.  
+Your task is to extract **ALL information without ANY omission** and convert it into a structured metadata JSON.
 
 ---
 
@@ -16,8 +19,6 @@ Your task is to extract **ALL information without ANY omission** and convert it 
 - **NO summarizations**: Use exact quotes and full details from the original text
 - **NO interpretation**: Extract facts as stated, do not infer or add information not in the passage
 - Metadata must be **hierarchical, semantically precise, and fully structured JSON**
-- Each entity must have:
-  - `"type"` and `"subtype"` fields based on the **EntityTypeSchema** below  
 - All relationships must be explicitly captured under a `"relations"` key
 - The final output must be **pure JSON**, with no commentary or explanations
 
@@ -38,26 +39,16 @@ Your task is to extract **ALL information without ANY omission** and convert it 
 
 {
   "title": <string>,
-  "type": <EntityType>,
-  "subtype": <EntitySubtype>,
   "attributes": {
-    <attribute_name>: <value_or_nested_entity>
+    <attribute_name>: <value_or_nested_object>
   },
   "relations": [
     {
       "relation": <string>,
-      "target": <entity_or_list_of_entities>
+      "target": <entity_name_or_object>
     }
   ]
 }
-
----
-
-### ENTITY TYPE SCHEMA
-
-"""
-
-metadata_construction_prompt = _prompt_template + ENTITY_TYPE_SCHEMA + """
 
 ---
 
@@ -70,53 +61,32 @@ metadata_construction_prompt = _prompt_template + ENTITY_TYPE_SCHEMA + """
 **Output:**
 {
   "title": "Can't Touch It",
-  "type": "WorkOfArt",
-  "subtype": "Song",
   "attributes": {
     "artist": {
       "name": "Ricki-Lee Coulter",
-      "type": "Person",
-      "subtype": "Musician",
-      "nationality": "Australian"
+      "nationality": "Australian",
+      "roles": ["singer", "songwriter"]
     },
-    "writers": [
-      {"name": "Ricki-Lee Coulter", "type": "Person", "subtype": "Musician"},
-      {"name": "Brian Kierulf", "type": "Person", "subtype": "Musician"},
-      {"name": "Joshua M. Schwartz", "type": "Person", "subtype": "Musician"}
-    ],
-    "producers": [
-      {"name": "Brian Kierulf", "type": "Person", "subtype": "Musician"},
-      {"name": "Joshua M. Schwartz", "type": "Person", "subtype": "Musician"},
-      {"name": "KNS Productions", "type": "Organization", "subtype": "MediaOrganization"}
-    ],
-    "album": {
-      "title": "Brand New Day",
-      "type": "WorkOfArt",
-      "subtype": "Album"
-    },
+    "writers": ["Ricki-Lee Coulter", "Brian Kierulf", "Joshua M. Schwartz"],
+    "producers": ["Brian Kierulf", "Joshua M. Schwartz", "KNS Productions"],
+    "album": "Brand New Day",
+    "album_order": "second studio album",
+    "single_type": "lead single",
     "release_date": "4 August 2007",
     "chart_performance": {
       "ARIA_Singles_Chart": {"peak_position": 2},
       "ARIA_Dance_Singles_Chart": {"peak_position": 1, "duration_at_peak": "8 consecutive weeks"}
     },
     "certification": {
-      "organization": {
-        "name": "Australian Recording Industry Association (ARIA)",
-        "type": "Organization",
-        "subtype": "NonProfitOrganization"
-      },
+      "organization": "Australian Recording Industry Association",
       "level": "Platinum",
       "shipments": "70,000 copies"
     }
   },
   "relations": [
-    {"relation": "included_in_album", "target": {"title": "Brand New Day", "type": "WorkOfArt", "subtype": "Album"}},
-    {"relation": "produced_by", "target": {"name": "KNS Productions", "type": "Organization", "subtype": "MediaOrganization"}},
-    {"relation": "written_by", "target": [
-      {"name": "Ricki-Lee Coulter", "type": "Person", "subtype": "Musician"},
-      {"name": "Brian Kierulf", "type": "Person", "subtype": "Musician"},
-      {"name": "Joshua M. Schwartz", "type": "Person", "subtype": "Musician"}
-    ]}
+    {"relation": "included_in_album", "target": "Brand New Day"},
+    {"relation": "produced_by", "target": "KNS Productions"},
+    {"relation": "written_by", "target": ["Ricki-Lee Coulter", "Brian Kierulf", "Joshua M. Schwartz"]}
   ]
 }
 
@@ -129,41 +99,28 @@ metadata_construction_prompt = _prompt_template + ENTITY_TYPE_SCHEMA + """
 **Output:**
 {
   "title": "Tosside",
-  "type": "Location",
-  "subtype": "Village",
   "attributes": {
-    "full_name": "Tosside",
-    "description": "A small village on the border of North Yorkshire and Lancashire in Northern England.",
+    "description": "A small village on the border of North Yorkshire and Lancashire in Northern England",
     "country": "England",
-    "regions": [
-      {"name": "North Yorkshire", "type": "Location", "subtype": "County"},
-      {"name": "Lancashire", "type": "Location", "subtype": "County"}
-    ],
-    "area": {"name": "Forest of Bowland", "type": "Location", "subtype": "NaturalPlace"},
+    "region": "Northern England",
+    "counties": ["North Yorkshire", "Lancashire"],
+    "area": "Forest of Bowland",
     "nearby_villages": [
-      {"name": "Slaidburn", "type": "Location", "subtype": "Village", "county": "Lancashire"},
-      {"name": "Wigglesworth", "type": "Location", "subtype": "Village", "county": "North Yorkshire"}
+      {"name": "Slaidburn", "county": "Lancashire"},
+      {"name": "Wigglesworth", "county": "North Yorkshire"}
     ],
     "distances": {
-      "Clitheroe": {"distance_miles": 11.5, "direction": "north"},
-      "Skipton": {"distance_miles": 17, "direction": "northwest"}
+      "from_Clitheroe": {"miles": 11.5, "direction": "north"},
+      "from_Skipton": {"miles": 17, "direction": "northwest"}
     },
     "elevation_ft": 870,
     "coordinates": {"latitude": 54.0001, "longitude": -2.35436},
     "road": "B6478"
   },
   "relations": [
-    {"relation": "located_within", "target": {"name": "Forest of Bowland", "type": "Location", "subtype": "NaturalPlace"}},
-    {"relation": "border_between", "target": [
-      {"name": "North Yorkshire", "type": "Location", "subtype": "County"},
-      {"name": "Lancashire", "type": "Location", "subtype": "County"}
-    ]},
-    {"relation": "near", "target": [
-      {"name": "Slaidburn", "type": "Location", "subtype": "Village"},
-      {"name": "Wigglesworth", "type": "Location", "subtype": "Village"},
-      {"name": "Clitheroe", "type": "Location", "subtype": "Town"},
-      {"name": "Skipton", "type": "Location", "subtype": "Town"}
-    ]}
+    {"relation": "located_within", "target": "Forest of Bowland"},
+    {"relation": "border_between", "target": ["North Yorkshire", "Lancashire"]},
+    {"relation": "near", "target": ["Slaidburn", "Wigglesworth", "Clitheroe", "Skipton"]}
   ]
 }
 
@@ -174,55 +131,29 @@ metadata_construction_prompt = _prompt_template + ENTITY_TYPE_SCHEMA + """
 **Output:**
 {
   "title": "Richard Masur",
-  "type": "Person",
-  "subtype": "Actor",
   "attributes": {
     "full_name": "Richard Masur",
     "birth_date": "November 20, 1948",
     "nationality": "American",
-    "occupations": ["actor"],
-    "filmography_count": "appeared in more than 80 movies",
+    "occupation": "actor",
+    "filmography_count": "more than 80 movies",
     "positions": [
       {
         "title": "President",
-        "organization": {
-          "name": "Screen Actors Guild (SAG)",
-          "type": "Organization",
-          "subtype": "NonProfitOrganization"
-        },
+        "organization": "Screen Actors Guild (SAG)",
         "term": "1995–1999",
-        "term_count": 2
+        "term_count": "two terms"
       },
       {
         "title": "Corporate Board Member",
-        "organization": {
-          "name": "Motion Picture & Television Fund",
-          "type": "Organization",
-          "subtype": "NonProfitOrganization"
-        },
+        "organization": "Motion Picture & Television Fund",
         "status": "current"
       }
     ]
   },
   "relations": [
-    {
-      "relation": "served_as_president_of",
-      "target": {
-        "name": "Screen Actors Guild (SAG)",
-        "type": "Organization",
-        "subtype": "NonProfitOrganization"
-      },
-      "period": "1995–1999"
-    },
-    {
-      "relation": "member_of_board",
-      "target": {
-        "name": "Motion Picture & Television Fund",
-        "type": "Organization",
-        "subtype": "NonProfitOrganization"
-      },
-      "status": "current"
-    }
+    {"relation": "served_as_president_of", "target": "Screen Actors Guild (SAG)", "period": "1995–1999"},
+    {"relation": "member_of_board", "target": "Motion Picture & Television Fund"}
   ]
 }
 
@@ -233,8 +164,6 @@ metadata_construction_prompt = _prompt_template + ENTITY_TYPE_SCHEMA + """
 - Output **only** the final JSON object — no explanations, notes, or comments.
 - The output **must include every factual detail** from the passage — no omissions or summarizations.  
 - Metadata must be **hierarchical, semantically precise, and fully structured JSON**.  
-- Each entity must have:
-  - `"type"` and `"subtype"` fields based on the **EntityTypeSchema** below.  
 - All relationships must be explicitly captured under a `"relations"` key.  
 - The final output must be **pure JSON**, with no commentary or explanations.
 

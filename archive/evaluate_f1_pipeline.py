@@ -1,22 +1,37 @@
 #!/usr/bin/env python
 """
-F1 Score Evaluation for Pipeline Results
-==========================================
-Evaluates test_new_pipeline_200_results_v2.json using F1 metrics
+F1 Score Evaluation for Pipeline Results (MRQA Official Metrics)
+=================================================================
+Evaluates pipeline results using MRQA official evaluation metrics
 """
 import json, re, string
 from collections import Counter
 from pathlib import Path
 
 # ---------- 하드코딩된 파일 경로 ----------
-PRED_PATH = Path("Results/ablation_dense_200_results.json")
+PRED_PATH = Path("Results/upper_bound_original_results.json")
 
-# ---------- text normalization ----------
+# ---------- MRQA Official Normalization ----------
 def normalize(s: str) -> str:
-    s = s.lower()
-    s = re.sub(r'\b(a|an|the)\b', ' ', s)
-    s = ''.join(ch for ch in s if ch not in string.punctuation)
-    return ' '.join(s.split())
+    """
+    MRQA official normalization:
+    Lower text and remove punctuation, articles and extra whitespace.
+    Reference: MRQA official eval script
+    """
+    def remove_articles(text):
+        return re.sub(r'\b(a|an|the)\b', ' ', text)
+    
+    def white_space_fix(text):
+        return ' '.join(text.split())
+    
+    def remove_punc(text):
+        exclude = set(string.punctuation)
+        return ''.join(ch for ch in text if ch not in exclude)
+    
+    def lower(text):
+        return text.lower()
+    
+    return white_space_fix(remove_articles(remove_punc(lower(s))))
 
 # ---------- metrics ----------
 def compute_metrics(pred: str, gold: str):
