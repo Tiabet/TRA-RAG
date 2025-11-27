@@ -4,19 +4,27 @@ LLM-based Answer Evaluation
 Use GPT-4o-mini to evaluate if predicted answers are correct
 """
 
+import asyncio
 import json
 import os
 from pathlib import Path
-from openai import OpenAI
+from openai import AsyncOpenAI
 from dotenv import load_dotenv
 from tqdm import tqdm
 import time
 
+# ============================================================
+# HYPERPARAMETERS
+# ============================================================
+CONCURRENCY = 50  # Number of parallel LLM calls
+MODEL = "openai/gpt-4o-mini"  # LLM model for evaluation
+# ============================================================
+
 # Load environment variables
 load_dotenv()
 
-# Initialize OpenAI client with ALICE API
-client = OpenAI(
+# Initialize AsyncOpenAI client with ALICE API
+client = AsyncOpenAI(
     api_key=os.getenv('ALICE_OPENAI_KEY'),
     base_url=os.getenv('ALICE_CHAT_URL')
 )
@@ -47,9 +55,9 @@ Evaluate whether the predicted answer is correct or incorrect. Respond with ONLY
 Do not include any text before or after the JSON object."""
 
 
-def evaluate_answer_with_llm(question: str, gold_answer: str, predicted_answer: str, model: str = "gpt-4o-mini") -> dict:
+async def evaluate_answer_with_llm(question: str, gold_answer: str, predicted_answer: str, model: str = MODEL) -> dict:
     """
-    Use LLM to evaluate if predicted answer is correct
+    Use LLM to evaluate if predicted answer is correct (async version)
     
     Returns:
         dict with keys: verdict (CORRECT/INCORRECT), confidence (HIGH/MEDIUM/LOW), reason
@@ -62,7 +70,7 @@ def evaluate_answer_with_llm(question: str, gold_answer: str, predicted_answer: 
     )
     
     try:
-        response = client.chat.completions.create(
+        response = await client.chat.completions.create(
             model=model,
             messages=[
                 {"role": "system", "content": "You are a precise and fair evaluator of question-answering systems."},
@@ -177,15 +185,42 @@ def load_qa_pairs(pred_path: Path, gold_path: Path):
 
 
 def evaluate_predictions(pred_path: Path, gold_path: Path, output_path: Path, 
-                        model: str = "gpt-4o-mini", max_samples: int = None):
+                        model: str = MODEL, max_samples: int = None):
     """
-    Evaluate all predictions using LLM
+    Evaluate all predictions using LLM (wrapper for async function)
+    """
+    return asyncio.run(evaluate_predictions_async(pred_path, gold_path, output_path, model, max_samples))
+
+
+async def evaluate_single(qa: dict, model: str, semaphore: asyncio.Semaphore) -> dict:
+    """Evaluate a single QA pair with semaphore for concurrency control."""
+    async with semaphore:
+        evaluation = await evaluate_answer_with_llm(
+            question=qa['question'],
+            gold_answer=qa['gold_answer'],
+            predicted_answer=qa['predicted_answer'],
+            model=model
+        )
+        return {
+            'question_id': qa['question_id'],
+            'question': qa['question'],
+            'gold_answer': qa['gold_answer'],
+            'predicted_answer': qa['predicted_answer'],
+            'evaluation': evaluation
+        }
+
+
+async def evaluate_predictions_async(pred_path: Path, gold_path: Path, output_path: Path, 
+                        model: str = MODEL, max_samples: int = None):
+    """
+    Evaluate all predictions using LLM with concurrency
     """
     
     print("="*100)
     print("🤖 LLM-Based Answer Evaluation")
     print("="*100)
     print(f"Model: {model}")
+    print(f"Concurrency: {CONCURRENCY}")
     print(f"Predictions: {pred_path}")
     print(f"Gold answers: {gold_path}")
     print()
@@ -200,46 +235,33 @@ def evaluate_predictions(pred_path: Path, gold_path: Path, output_path: Path,
     print(f"✅ Loaded {len(qa_pairs)} question-answer pairs")
     print()
     
-    # Evaluate each pair
-    print("🔍 Evaluating answers...")
-    results = []
+    # Evaluate each pair with concurrency
+    print(f"🔍 Evaluating answers (concurrency={CONCURRENCY})...")
     
+    semaphore = asyncio.Semaphore(CONCURRENCY)
+    tasks = [evaluate_single(qa, model, semaphore) for qa in qa_pairs]
+    
+    # Use tqdm for progress
+    results = []
+    for coro in tqdm(asyncio.as_completed(tasks), total=len(tasks), desc="Evaluating"):
+        result = await coro
+        results.append(result)
+    
+    # Count results
     correct_count = 0
     incorrect_count = 0
     error_count = 0
-    
     confidence_counts = {"HIGH": 0, "MEDIUM": 0, "LOW": 0}
     
-    for qa in tqdm(qa_pairs, desc="Evaluating"):
-        evaluation = evaluate_answer_with_llm(
-            question=qa['question'],
-            gold_answer=qa['gold_answer'],
-            predicted_answer=qa['predicted_answer'],
-            model=model
-        )
-        
-        result = {
-            'question_id': qa['question_id'],
-            'question': qa['question'],
-            'gold_answer': qa['gold_answer'],
-            'predicted_answer': qa['predicted_answer'],
-            'evaluation': evaluation
-        }
-        
-        results.append(result)
-        
-        # Update counts
+    for result in results:
+        evaluation = result['evaluation']
         if evaluation['verdict'] == 'CORRECT':
             correct_count += 1
         elif evaluation['verdict'] == 'INCORRECT':
             incorrect_count += 1
         else:  # ERROR
             error_count += 1
-        
         confidence_counts[evaluation['confidence']] = confidence_counts.get(evaluation['confidence'], 0) + 1
-        
-        # Rate limiting: small delay between API calls
-        time.sleep(0.1)
     
     print()
     print("="*100)
@@ -306,11 +328,11 @@ if __name__ == "__main__":
     import argparse
     
     parser = argparse.ArgumentParser(description="LLM-based answer evaluation")
-    parser.add_argument('--pred', type=Path, default=Path('Results/multihop_pipeline_200_results_IMPROVED.json'),
+    parser.add_argument('--pred', type=Path, default=Path('test_new_pipeline_200_results_v2.json'),
                        help='Path to predictions file')
     parser.add_argument('--gold', type=Path, default=Path('HotpotQA/qa.json'),
                        help='Path to gold answers file')
-    parser.add_argument('--out', type=Path, default=Path('Results/llm_evaluation_results.json'),
+    parser.add_argument('--out', type=Path, default=Path('Results/llm_evaluation_results_hotpot_200_v2.json'),
                        help='Path to output file')
     parser.add_argument('--model', type=str, default='openai/gpt-4o-mini',
                        help='OpenAI model to use for evaluation')
