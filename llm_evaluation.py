@@ -77,7 +77,8 @@ async def evaluate_answer_with_llm(question: str, gold_answer: str, predicted_an
                 {"role": "user", "content": prompt}
             ],
             temperature=0.0,  # Deterministic evaluation
-            max_tokens=300
+            max_tokens=300,
+            response_format={"type": "json_object"}  # Request JSON response
         )
         
         # Parse JSON response - correct attribute access
@@ -283,9 +284,9 @@ if __name__ == "__main__":
     import argparse
     
     parser = argparse.ArgumentParser(description="LLM-based answer evaluation")
-    parser.add_argument('--pred', type=Path, default=Path('Results/naive_musique_result.json'),
+    parser.add_argument('--pred', type=Path, default=Path('Results/upper_bound_original_results.json'),
                        help='Path to predictions file')
-    parser.add_argument('--gold', type=Path, default=Path('MuSiQue/qa.json'),
+    parser.add_argument('--gold', type=Path, default=Path('HotpotQA/qa.json'),
                        help='Path to gold answers file')
     parser.add_argument('--model', type=str, default='openai/gpt-4o-mini',
                        help='OpenAI model to use for evaluation')
