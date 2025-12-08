@@ -184,12 +184,12 @@ def load_qa_pairs(pred_path: Path, gold_path: Path):
     return qa_pairs
 
 
-def evaluate_predictions(pred_path: Path, gold_path: Path, output_path: Path, 
+def evaluate_predictions(pred_path: Path, gold_path: Path,
                         model: str = MODEL, max_samples: int = None):
     """
     Evaluate all predictions using LLM (wrapper for async function)
     """
-    return asyncio.run(evaluate_predictions_async(pred_path, gold_path, output_path, model, max_samples))
+    return asyncio.run(evaluate_predictions_async(pred_path, gold_path, model, max_samples))
 
 
 async def evaluate_single(qa: dict, model: str, semaphore: asyncio.Semaphore) -> dict:
@@ -210,7 +210,7 @@ async def evaluate_single(qa: dict, model: str, semaphore: asyncio.Semaphore) ->
         }
 
 
-async def evaluate_predictions_async(pred_path: Path, gold_path: Path, output_path: Path, 
+async def evaluate_predictions_async(pred_path: Path, gold_path: Path,
                         model: str = MODEL, max_samples: int = None):
     """
     Evaluate all predictions using LLM with concurrency
@@ -251,7 +251,6 @@ async def evaluate_predictions_async(pred_path: Path, gold_path: Path, output_pa
     correct_count = 0
     incorrect_count = 0
     error_count = 0
-    confidence_counts = {"HIGH": 0, "MEDIUM": 0, "LOW": 0}
     
     for result in results:
         evaluation = result['evaluation']
@@ -261,79 +260,33 @@ async def evaluate_predictions_async(pred_path: Path, gold_path: Path, output_pa
             incorrect_count += 1
         else:  # ERROR
             error_count += 1
-        confidence_counts[evaluation['confidence']] = confidence_counts.get(evaluation['confidence'], 0) + 1
-    
-    print()
-    print("="*100)
-    print("📊 EVALUATION RESULTS")
-    print("="*100)
     
     total = len(results)
     accuracy = correct_count / total if total > 0 else 0
     
-    print(f"\n📈 Overall Statistics:")
-    print(f"   Total evaluated: {total}")
-    print(f"   ✅ Correct: {correct_count} ({correct_count/total*100:.1f}%)")
-    print(f"   ❌ Incorrect: {incorrect_count} ({incorrect_count/total*100:.1f}%)")
+    print()
+    print("="*60)
+    print("📊 LLM EVALUATION RESULTS")
+    print("="*60)
+    print(f"Total: {total}")
+    print(f"✅ Correct: {correct_count} ({correct_count/total*100:.1f}%)")
+    print(f"❌ Incorrect: {incorrect_count} ({incorrect_count/total*100:.1f}%)")
     if error_count > 0:
-        print(f"   ⚠️ Errors: {error_count} ({error_count/total*100:.1f}%)")
-    print(f"   🎯 LLM Accuracy: {accuracy:.3f}")
+        print(f"⚠️ Errors: {error_count}")
+    print(f"🎯 LLM Accuracy: {accuracy:.3f} ({correct_count}/{total})")
+    print("="*60)
     
-    print(f"\n🎚️ Confidence Distribution:")
-    print(f"   HIGH: {confidence_counts['HIGH']} ({confidence_counts['HIGH']/total*100:.1f}%)")
-    print(f"   MEDIUM: {confidence_counts['MEDIUM']} ({confidence_counts['MEDIUM']/total*100:.1f}%)")
-    print(f"   LOW: {confidence_counts['LOW']} ({confidence_counts['LOW']/total*100:.1f}%)")
-    
-    # Show some examples
-    print(f"\n📝 Sample Correct Predictions (first 3):")
-    correct_samples = [r for r in results if r['evaluation']['verdict'] == 'CORRECT'][:3]
-    for i, sample in enumerate(correct_samples, 1):
-        print(f"\n   {i}. Q: {sample['question'][:80]}...")
-        print(f"      Gold: {sample['gold_answer'][:60]}...")
-        print(f"      Pred: {sample['predicted_answer'][:60]}...")
-        print(f"      Reason: {sample['evaluation']['reason']}")
-    
-    print(f"\n📝 Sample Incorrect Predictions (first 3):")
-    incorrect_samples = [r for r in results if r['evaluation']['verdict'] == 'INCORRECT'][:3]
-    for i, sample in enumerate(incorrect_samples, 1):
-        print(f"\n   {i}. Q: {sample['question'][:80]}...")
-        print(f"      Gold: {sample['gold_answer'][:60]}...")
-        print(f"      Pred: {sample['predicted_answer'][:60]}...")
-        print(f"      Reason: {sample['evaluation']['reason']}")
-    
-    # Save results
-    output_data = {
-        'metadata': {
-            'model': model,
-            'total_evaluated': total,
-            'correct': correct_count,
-            'incorrect': incorrect_count,
-            'errors': error_count,
-            'accuracy': accuracy,
-            'confidence_distribution': confidence_counts
-        },
-        'results': results
-    }
-    
-    with open(output_path, 'w', encoding='utf-8') as f:
-        json.dump(output_data, f, indent=2, ensure_ascii=False)
-    
-    print(f"\n✅ Saved detailed results to: {output_path}")
-    print("="*100)
-    
-    return output_data
+    return {'accuracy': accuracy, 'correct': correct_count, 'total': total}
 
 
 if __name__ == "__main__":
     import argparse
     
     parser = argparse.ArgumentParser(description="LLM-based answer evaluation")
-    parser.add_argument('--pred', type=Path, default=Path('Results/test_pipeline_v3_original_200_results.json'),
+    parser.add_argument('--pred', type=Path, default=Path('Results/naive_musique_result.json'),
                        help='Path to predictions file')
-    parser.add_argument('--gold', type=Path, default=Path('HotpotQA/qa.json'),
+    parser.add_argument('--gold', type=Path, default=Path('MuSiQue/qa.json'),
                        help='Path to gold answers file')
-    parser.add_argument('--out', type=Path, default=Path('Results/llm_evaluation_results_hotpot_200_v3.json'),
-                       help='Path to output file')
     parser.add_argument('--model', type=str, default='openai/gpt-4o-mini',
                        help='OpenAI model to use for evaluation')
     parser.add_argument('--max-samples', type=int, default=None,
@@ -344,7 +297,6 @@ if __name__ == "__main__":
     evaluate_predictions(
         pred_path=args.pred,
         gold_path=args.gold,
-        output_path=args.out,
         model=args.model,
         max_samples=args.max_samples
     )
