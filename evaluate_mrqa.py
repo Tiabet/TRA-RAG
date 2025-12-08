@@ -49,6 +49,20 @@ def compute_exact_match(gold: str, predicted: str) -> float:
     return 1.0 if normalize_answer(gold) == normalize_answer(predicted) else 0.0
 
 
+def compute_accuracy(gold: str, predicted: str) -> float:
+    """
+    Compute Accuracy score.
+    Returns 1.0 if normalized gold answer is contained in normalized predicted answer.
+    """
+    norm_gold = normalize_answer(gold)
+    norm_pred = normalize_answer(predicted)
+    
+    if not norm_gold or not norm_pred:
+        return 0.0
+    
+    return 1.0 if norm_gold in norm_pred else 0.0
+
+
 def compute_f1(gold: str, predicted: str) -> Tuple[float, float, float]:
     """
     Compute F1 score.
@@ -92,19 +106,23 @@ def compute_metrics_with_aliases(
         predicted: Predicted answer string
         
     Returns:
-        Dict with EM, F1, Precision, Recall (best across all gold answers)
+        Dict with EM, Accuracy, F1, Precision, Recall (best across all gold answers)
     """
     best_em = 0.0
+    best_accuracy = 0.0
     best_f1 = 0.0
     best_precision = 0.0
     best_recall = 0.0
     
     for gold in gold_answers:
         em = compute_exact_match(gold, predicted)
+        accuracy = compute_accuracy(gold, predicted)
         f1, precision, recall = compute_f1(gold, predicted)
         
         if em > best_em:
             best_em = em
+        if accuracy > best_accuracy:
+            best_accuracy = accuracy
         if f1 > best_f1:
             best_f1 = f1
             best_precision = precision
@@ -112,6 +130,7 @@ def compute_metrics_with_aliases(
     
     return {
         "exact_match": best_em,
+        "accuracy": best_accuracy,
         "f1": best_f1,
         "precision": best_precision,
         "recall": best_recall
@@ -186,6 +205,7 @@ def evaluate(file_path: Path, verbose: bool = False) -> Dict[str, float]:
     
     # Accumulate scores
     total_em = 0.0
+    total_accuracy = 0.0
     total_f1 = 0.0
     total_precision = 0.0
     total_recall = 0.0
@@ -193,6 +213,7 @@ def evaluate(file_path: Path, verbose: bool = False) -> Dict[str, float]:
     # Additional stats
     insufficient_count = 0
     perfect_match_count = 0
+    accuracy_match_count = 0
     
     example_results = []
     
@@ -208,12 +229,15 @@ def evaluate(file_path: Path, verbose: bool = False) -> Dict[str, float]:
         metrics = compute_metrics_with_aliases(gold_answers, predicted)
         
         total_em += metrics["exact_match"]
+        total_accuracy += metrics["accuracy"]
         total_f1 += metrics["f1"]
         total_precision += metrics["precision"]
         total_recall += metrics["recall"]
         
         if metrics["exact_match"] == 1.0:
             perfect_match_count += 1
+        if metrics["accuracy"] == 1.0:
+            accuracy_match_count += 1
         
         example_results.append({
             "id": item.get("id", i),
@@ -231,11 +255,13 @@ def evaluate(file_path: Path, verbose: bool = False) -> Dict[str, float]:
     n = len(results)
     avg_metrics = {
         "exact_match": total_em / n if n else 0,
+        "accuracy": total_accuracy / n if n else 0,
         "f1": total_f1 / n if n else 0,
         "precision": total_precision / n if n else 0,
         "recall": total_recall / n if n else 0,
         "total": n,
         "perfect_matches": int(total_em),
+        "accuracy_matches": int(total_accuracy),
         "insufficient_answers": insufficient_count
     }
     
@@ -250,6 +276,7 @@ def print_results(metrics: Dict[str, float], file_path: Path):
     print(f"File: {file_path.name}")
     print(f"{'='*60}")
     print(f"Exact Match (EM) : {metrics['exact_match']:.3f} ({metrics['perfect_matches']}/{metrics['total']})")
+    print(f"Accuracy         : {metrics['accuracy']:.3f} ({metrics['accuracy_matches']}/{metrics['total']})")
     print(f"F1 Score         : {metrics['f1']:.3f}")
     print(f"Precision        : {metrics['precision']:.3f}")
     print(f"Recall           : {metrics['recall']:.3f}")
@@ -261,7 +288,7 @@ def print_results(metrics: Dict[str, float], file_path: Path):
 def main():
     parser = argparse.ArgumentParser(description="MRQA Official Evaluation")
     parser.add_argument("file", type=str, nargs="?", 
-                        default="Results/test_pipeline_v3_original_200_results.json",
+                        default="Results/naive_musique_result.json",
                         help="Path to result JSON file")
     parser.add_argument("-v", "--verbose", action="store_true",
                         help="Print per-example results")
@@ -272,21 +299,21 @@ def main():
     
     if args.compare:
         # Compare multiple files
-        print(f"\n{'='*80}")
+        print(f"\n{'='*90}")
         print("📊 Comparison of Multiple Results")
-        print(f"{'='*80}")
-        print(f"{'File':<45} {'EM':>8} {'F1':>8} {'Prec':>8} {'Recall':>8}")
-        print(f"{'-'*80}")
+        print(f"{'='*90}")
+        print(f"{'File':<45} {'EM':>8} {'Acc':>8} {'F1':>8} {'Prec':>8} {'Recall':>8}")
+        print(f"{'-'*90}")
         
         for file_path in args.compare:
             path = Path(file_path)
             if path.exists():
                 metrics, _ = evaluate(path, verbose=False)
-                print(f"{path.name:<45} {metrics['exact_match']:>8.3f} {metrics['f1']:>8.3f} {metrics['precision']:>8.3f} {metrics['recall']:>8.3f}")
+                print(f"{path.name:<45} {metrics['exact_match']:>8.3f} {metrics['accuracy']:>8.3f} {metrics['f1']:>8.3f} {metrics['precision']:>8.3f} {metrics['recall']:>8.3f}")
             else:
-                print(f"{path.name:<45} {'FILE NOT FOUND':>35}")
+                print(f"{path.name:<45} {'FILE NOT FOUND':>44}")
         
-        print(f"{'='*80}\n")
+        print(f"{'='*90}\n")
     else:
         # Single file evaluation
         file_path = Path(args.file)
