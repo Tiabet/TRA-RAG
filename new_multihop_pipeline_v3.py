@@ -479,7 +479,8 @@ class NewMultihopPipelineV3:
                             'id': sq.id,
                             'question': sq.question,
                             'answer': sq.answer,
-                            'depends_on': sq.depends_on
+                            'depends_on': sq.depends_on,
+                            'retrieved_passages': getattr(sq, 'retrieved_passages', [])
                         }
                         for sq in decomposition.subquestions
                     ]

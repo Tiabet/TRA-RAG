@@ -71,7 +71,8 @@ async def process_single_question(pipeline, item, idx, total):
                 'answer_aliases': item.get('answer_aliases', []),
                 'time': elapsed,
                 'num_passages': num_passages,
-                'success': True
+                'success': True,
+                'retrieved_passages': result.get('retrieved_passages', [])
             }
         else:
             print(f"[{idx+1:3d}/{total}] ✗ ({elapsed:.1f}s) Error: {result.get('error', '')[:50]}...")

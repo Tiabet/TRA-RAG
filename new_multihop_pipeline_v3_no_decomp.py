@@ -215,7 +215,7 @@ class NewMultihopPipelineV3NoDecomp:
                 'final_answer': final_answer,
                 'decomposition': None,
                 'num_passages': len(passages),
-                'retrieved_titles': [p['title'] for p in passages],
+                'retrieved_passages': passages,
                 'time': elapsed
             }
             
