@@ -25,7 +25,7 @@ from NaiveRAG.naive_passage_retriever import NaivePassageRetriever
 from query_decomposition import decompose_query, substitute_answers
 from Prompt.answer import DETAILED_SUBQUESTION_ANSWERING_PROMPT
 from Prompt.subquestion_answering_prompt import FINAL_ANSWER_SYNTHESIS_PROMPT
-from llm_logger import log_llm_call
+from llm_logger import log_llm_call, init_logger
 
 async def answer_subquestion(client, retriever, sq, decomposition, previous_context):
     # Substitute placeholders
@@ -54,7 +54,7 @@ async def answer_subquestion(client, retriever, sq, decomposition, previous_cont
     full_prompt = prompt + "\n" + previous_context + "\n\n---Current Information---\n" + passage_text + "\n\n---Sub-Question---\n" + actual_question + "\n\n---Answer---\n"
     
     response = await client.chat.completions.create(
-        model="gpt-4o-mini",
+        model="openai/gpt-4o-mini",
         messages=[
             {"role": "system", "content": "You are a precise question answering system."},
             {"role": "user", "content": full_prompt}
@@ -64,15 +64,30 @@ async def answer_subquestion(client, retriever, sq, decomposition, previous_cont
     )
     
     answer = response.choices[0].message.content.strip()
+    
+    # Log LLM call for debugging
+    log_llm_call(
+        call_type="SubQuestion Answering (NaiveRAG)",
+        input_text=full_prompt,
+        output_text=answer,
+        context={
+            "subquestion": actual_question,
+            "num_passages": len(results),
+            "passages": [r['title'] for r in results]
+        }
+    )
+    
     return answer, results
 
 async def process_question(client, retriever, item):
     question = item['question']
     
     # 1. Decompose
-    decomposition = await decompose_query(client, question)
-    if not decomposition:
+    decomposition_result = await decompose_query(client, question)
+    if not decomposition_result or not decomposition_result.get('success'):
         return {'question': question, 'error': 'Decomposition failed'}
+    
+    decomposition = decomposition_result['decomposition']
         
     all_passages = {} # title -> text
     
@@ -88,6 +103,7 @@ async def process_question(client, retriever, item):
         
         answer, results = await answer_subquestion(client, retriever, sq, decomposition, prev_context)
         sq.answer = answer
+        sq.retrieved_passages = results
         
         # Collect passages
         for res in results:
@@ -109,7 +125,7 @@ async def process_question(client, retriever, item):
     prompt = prompt.replace("{{passages}}", unique_passages_text)
     
     response = await client.chat.completions.create(
-        model="gpt-4o-mini",
+        model="openai/gpt-4o-mini",
         messages=[
             {"role": "system", "content": "You are a precise question answering system."},
             {"role": "user", "content": prompt}
@@ -120,10 +136,23 @@ async def process_question(client, retriever, item):
     
     final_answer = response.choices[0].message.content.strip()
     
+    # Log Final Answer
+    log_llm_call(
+        call_type="Final Answer Synthesis (NaiveRAG)",
+        input_text=prompt,
+        output_text=final_answer,
+        context={
+            "main_query": question,
+            "num_unique_passages": len(all_passages)
+        }
+    )
+    
     return {
+        'id': item.get('_id'),
         'question': question,
         'gold_answer': item['answer'],
         'predicted_answer': final_answer,
+        'answer_aliases': item.get('answer_aliases', []),
         'decomposition': [sq.to_dict() for sq in decomposition.subquestions]
     }
 
@@ -133,6 +162,7 @@ async def main():
     args = parser.parse_args()
     
     load_dotenv()
+    init_logger()
     
     # Config
     if args.dataset == 'hotpotqa':
@@ -142,12 +172,19 @@ async def main():
         data_path = 'MuSiQue/musique_sample_200.json'
         cache_path = 'MuSiQue/passage_embeddings_sample_200.npz'
         
-    client = AsyncOpenAI(
+    # Chat Client (for answer generation)
+    chat_client = AsyncOpenAI(
         api_key=os.getenv('ALICE_OPENAI_KEY'),
         base_url=os.getenv('ALICE_CHAT_URL')
     )
     
-    retriever = NaivePassageRetriever(client, data_path, cache_path)
+    # Embed Client (for embedding generation)
+    embed_client = AsyncOpenAI(
+        api_key=os.getenv('ALICE_OPENAI_KEY'),
+        base_url=os.getenv('ALICE_EMBED_URL')
+    )
+    
+    retriever = NaivePassageRetriever(embed_client, data_path, cache_path)
     await retriever.initialize()
     
     # Load Data
@@ -157,20 +194,40 @@ async def main():
     results = []
     print(f"Processing {len(data)} questions with QD...")
     
+    import time
+    start_time = time.time()
+    
     # Process in batches for concurrency
-    batch_size = 20  # Adjust based on rate limits
+    batch_size = 50  # Adjust based on rate limits
     for i in range(0, len(data), batch_size):
         batch = data[i:i+batch_size]
-        tasks = [process_question(client, retriever, item) for item in batch]
+        tasks = [process_question(chat_client, retriever, item) for item in batch]
         batch_results = await asyncio.gather(*tasks)
         results.extend(batch_results)
         print(f"Processed {min(i+batch_size, len(data))}/{len(data)}")
             
+    total_time = time.time() - start_time
+    
     # Save Results
-    output_file = f'Results/NaiveRAG_passage_QD_{args.dataset}.json'
-    os.makedirs('Results', exist_ok=True)
+    output_file = f'Results/NaiveRAG/NaiveRAG_passage_QD_{args.dataset}.json'
+    os.makedirs('Results/NaiveRAG', exist_ok=True)
+    
+    output = {
+        'config': {
+            'pipeline': 'NaiveRAG_QD',
+            'dataset': args.dataset,
+            'model': 'gpt-4o-mini'
+        },
+        'summary': {
+            'total_questions': len(data),
+            'total_time': total_time,
+            'avg_time_per_question': total_time / len(data) if data else 0
+        },
+        'results': results
+    }
+    
     with open(output_file, 'w', encoding='utf-8') as f:
-        json.dump(results, f, indent=2, ensure_ascii=False)
+        json.dump(output, f, indent=2, ensure_ascii=False)
         
     print(f"Saved results to {output_file}")
 
