@@ -124,7 +124,7 @@ async def decompose_query(
     client: AsyncOpenAI,
     query: str,
     model: str = "openai/gpt-4o-mini",
-    temperature: float = 0.1
+    temperature: float = 0.0
 ) -> Dict:
     """
     Decompose a multi-hop question into sequential sub-questions.

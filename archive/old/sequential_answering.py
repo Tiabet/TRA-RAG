@@ -74,7 +74,7 @@ async def extract_entities_from_subquestion(
             messages=[
                 {"role": "user", "content": formatted_prompt}
             ],
-            temperature=0.1,
+            temperature=0.0,
             max_tokens=1024
         )
         
@@ -310,7 +310,7 @@ async def generate_answer_from_passages(
                     "content": prompt
                 }
             ],
-            temperature=0.1,
+            temperature=0.0,
             max_tokens=max_tokens
         )
         
@@ -667,7 +667,7 @@ async def synthesize_final_answer(
                     "content": prompt
                 }
             ],
-            temperature=0.1,
+            temperature=0.0,
             max_tokens=150
         )
         

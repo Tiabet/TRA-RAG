@@ -72,8 +72,8 @@ def parse_args():
     parser.add_argument(
         "--concurrency",
         type=int,
-        default=20,
-        help="동시 처리 개수 (기본값: 5)"
+        default=50,
+        help="동시 처리 개수 (기본값: 50)"
     )
     
     return parser.parse_args()
@@ -152,7 +152,7 @@ async def generate_metadata(client: AsyncOpenAI, passage: List, model: str) -> D
                     "content": full_prompt
                 }
             ],
-            temperature=0.1,
+            temperature=0.0,
             max_tokens=8192,
             response_format={"type": "json_object"}
         )

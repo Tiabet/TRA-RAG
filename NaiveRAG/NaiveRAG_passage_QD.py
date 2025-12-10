@@ -59,7 +59,7 @@ async def answer_subquestion(client, retriever, sq, decomposition, previous_cont
             {"role": "system", "content": "You are a precise question answering system."},
             {"role": "user", "content": full_prompt}
         ],
-        temperature=0.1,
+        temperature=0.0,
         max_tokens=50
     )
     
@@ -130,7 +130,7 @@ async def process_question(client, retriever, item):
             {"role": "system", "content": "You are a precise question answering system."},
             {"role": "user", "content": prompt}
         ],
-        temperature=0.1,
+        temperature=0.0,
         max_tokens=50
     )
     

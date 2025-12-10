@@ -277,6 +277,30 @@ async def evaluate_predictions_async(pred_path: Path, gold_path: Path,
     print(f"🎯 LLM Accuracy: {accuracy:.3f} ({correct_count}/{total})")
     print("="*60)
     
+    # Save detailed results
+    output_data = {
+        'config': {
+            'model': model,
+            'predictions_file': str(pred_path),
+            'gold_file': str(gold_path),
+            'timestamp': time.strftime("%Y-%m-%d %H:%M:%S")
+        },
+        'summary': {
+            'total': total,
+            'correct': correct_count,
+            'incorrect': incorrect_count,
+            'errors': error_count,
+            'accuracy': accuracy
+        },
+        'results': results
+    }
+    
+    output_path = pred_path.parent / f"llm_eval_{pred_path.name}"
+    with open(output_path, 'w', encoding='utf-8') as f:
+        json.dump(output_data, f, indent=2, ensure_ascii=False)
+        
+    print(f"\n💾 Detailed evaluation results saved to: {output_path}")
+    
     return {'accuracy': accuracy, 'correct': correct_count, 'total': total}
 
 
@@ -284,9 +308,9 @@ if __name__ == "__main__":
     import argparse
     
     parser = argparse.ArgumentParser(description="LLM-based answer evaluation")
-    parser.add_argument('--pred', type=Path, default=Path('Results/upper_bound_original_results.json'),
+    parser.add_argument('--pred', type=Path, default=Path('Results/NaiveRAG/NaiveRAG_passage_QD_musique.json'),
                        help='Path to predictions file')
-    parser.add_argument('--gold', type=Path, default=Path('HotpotQA/qa.json'),
+    parser.add_argument('--gold', type=Path, default=Path('MuSiQue/qa.json'),
                        help='Path to gold answers file')
     parser.add_argument('--model', type=str, default='openai/gpt-4o-mini',
                        help='OpenAI model to use for evaluation')

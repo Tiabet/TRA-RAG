@@ -157,7 +157,9 @@ class NewMultihopPipelineV3:
                 'metadata': metadata,
                 'matched_path': path['key_path'],
                 'matched_value': path['value'],
-                'score': path['score']
+                'score': path['score'],
+                'bm25_score': path.get('bm25_score', 0),
+                'dense_score': path.get('dense_score', 0)
             })
         
         return passages
@@ -242,7 +244,7 @@ class NewMultihopPipelineV3:
                 {"role": "system", "content": "You are a precise question answering system. Give short, direct answers."},
                 {"role": "user", "content": prompt}
             ],
-            temperature=0.1,
+            temperature=0.0,
             max_tokens=100
         )
         
@@ -366,7 +368,7 @@ class NewMultihopPipelineV3:
                 {"role": "system", "content": "You are a precise question answering system."},
                 {"role": "user", "content": prompt}
             ],
-            temperature=0.1,
+            temperature=0.0,
             max_tokens=150
         )
         

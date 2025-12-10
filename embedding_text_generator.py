@@ -49,170 +49,132 @@ class EmbeddingTextGenerator:
         
         # Extract from attributes
         if 'attributes' in inner_metadata:
-            self._extract_recursive(
-                title=title,
-                obj=inner_metadata['attributes'],
-                key_path=[],
-                results=results
-            )
+            for key, value in inner_metadata['attributes'].items():
+                # Skip type/subtype
+                if key in ('type', 'subtype'):
+                    continue
+                
+                # Clean value (remove type/subtype from nested dicts)
+                cleaned_value = self._clean_value(value)
+                
+                # Add result (Attribute type)
+                self._add_result(title, [key], cleaned_value, results, is_relation=False)
         
         # Extract from relations
         if 'relations' in inner_metadata:
             for relation in inner_metadata.get('relations', []):
-                self._extract_relation(title, relation, results)
+                # Relation is usually a dict: { "relation": "...", "target": ... }
+                if not isinstance(relation, dict):
+                    continue
+                
+                relation_type = relation.get('relation', 'related_to')
+                
+                # Clean the whole relation object, but exclude 'relation' key from the value
+                value_dict = relation.copy()
+                if 'relation' in value_dict:
+                    del value_dict['relation']
+                
+                cleaned_value = self._clean_value(value_dict)
+                
+                # Add result (Relation type)
+                self._add_result(title, [relation_type], cleaned_value, results, is_relation=True)
         
-        # Extract top-level fields (excluding type, subtype, title, attributes, relations)
+        # Extract top-level fields (excluding type, subtype, title, attributes, relations, metadata)
         skip_keys = {'type', 'subtype', 'title', 'attributes', 'relations', 'metadata'}
         for key, value in inner_metadata.items():
             if key in skip_keys:
                 continue
-            self._extract_recursive(
-                title=title,
-                obj=value,
-                key_path=[key],
-                results=results
-            )
+            
+            cleaned_value = self._clean_value(value)
+            print(f"DEBUG: Key={key}, Type={type(cleaned_value)}")
+            self._add_result(title, [key], cleaned_value, results, is_relation=False)
+            
+            # [Hybrid Approach] Also add flattened leaf nodes for complex objects
+            # This ensures specific details are not lost in the grouped text
+            if isinstance(cleaned_value, dict):
+                print(f"DEBUG: Calling flatten for {key}")
+                self._add_flattened_results(title, [key], cleaned_value, results)
         
         return results
-    
-    def _extract_recursive(
+
+    def _add_flattened_results(
         self,
         title: str,
-        obj: Any,
-        key_path: List[str],
+        current_path: List[str],
+        value: Any,
         results: List[Dict]
     ):
+        """Recursively add flattened leaf nodes."""
+        print(f"DEBUG: Flattening {current_path} -> {type(value)}")
+        if isinstance(value, dict):
+            for k, v in value.items():
+                self._add_flattened_results(title, current_path + [k], v, results)
+        elif isinstance(value, list):
+            for item in value:
+                self._add_flattened_results(title, current_path, item, results)
+        else:
+            # Leaf node
+            self._add_result(title, current_path, value, results, is_relation=False)
+
+    def _clean_value(self, value: Any) -> Any:
         """
-        Recursively extract key-value pairs.
-        
-        Args:
-            title: Entity title
-            obj: Current object to process
-            key_path: Current path of keys
-            results: Accumulator for results
+        Recursively remove type and subtype from dictionary values.
         """
-        if obj is None:
-            return
+        if isinstance(value, dict):
+            return {
+                k: self._clean_value(v)
+                for k, v in value.items()
+                if k not in ('type', 'subtype')
+            }
+        elif isinstance(value, list):
+            return [self._clean_value(item) for item in value]
+        else:
+            return value
+    
+    def _format_value_natural(self, value: Any) -> str:
+        """
+        Format value into natural language string.
         
-        # Skip type/subtype anywhere in the structure
-        if isinstance(obj, dict):
-            for key, value in obj.items():
-                # Skip meaningless keys
-                if key in ('type', 'subtype'):
-                    continue
-                
-                new_path = key_path + [key]
-                
-                if isinstance(value, dict):
-                    # Check if it's an entity object (has name/title as primary identifier)
-                    if 'name' in value or 'title' in value:
-                        # Extract the entity reference as a single value
-                        entity_name = value.get('name') or value.get('title')
-                        self._add_result(title, new_path, entity_name, results)
-                        
-                        # Also extract nested attributes of this entity
-                        for sub_key, sub_value in value.items():
-                            if sub_key in ('type', 'subtype', 'name', 'title'):
-                                continue
-                            sub_path = new_path + [sub_key]
-                            self._extract_recursive(title, sub_value, sub_path, results)
-                    else:
-                        # Regular nested dict
-                        self._extract_recursive(title, value, new_path, results)
-                        
-                elif isinstance(value, list):
-                    # Process list items
-                    for item in value:
-                        if isinstance(item, dict):
-                            # Entity in list
-                            if 'name' in item or 'title' in item:
-                                entity_name = item.get('name') or item.get('title')
-                                self._add_result(title, new_path, entity_name, results)
-                                
-                                # Extract nested attributes
-                                for sub_key, sub_value in item.items():
-                                    if sub_key in ('type', 'subtype', 'name', 'title'):
-                                        continue
-                                    sub_path = new_path + [sub_key]
-                                    self._extract_recursive(title, sub_value, sub_path, results)
-                            else:
-                                self._extract_recursive(title, item, new_path, results)
-                        else:
-                            # Simple value in list
-                            self._add_result(title, new_path, item, results)
-                else:
-                    # Leaf value
-                    self._add_result(title, new_path, value, results)
+        - Dict: "key is value, key is value"
+        - List: "item, item"
+        - String: "value"
+        """
+        if isinstance(value, dict):
+            parts = []
+            for k, v in value.items():
+                # Clean key: replace underscores with spaces
+                clean_k = k.replace('_', ' ')
+                # Recursively format value
+                clean_v = self._format_value_natural(v)
+                parts.append(f"{clean_k} is {clean_v}")
+            return ", ".join(parts)
         
-        elif isinstance(obj, list):
-            for item in obj:
-                self._extract_recursive(title, item, key_path, results)
+        elif isinstance(value, list):
+            return ", ".join([self._format_value_natural(item) for item in value])
         
         else:
-            # Leaf value (shouldn't reach here normally, but handle it)
-            if key_path:
-                self._add_result(title, key_path, obj, results)
-    
-    def _extract_relation(self, title: str, relation: Dict, results: List[Dict]):
-        """
-        Extract from a relation object.
-        
-        Relation structure:
-        {
-            "relation": "directed_by",
-            "target": {"name": "Martin Scorsese", "type": "Person", ...},
-            "year": 2013,
-            ...
-        }
-        Or target can be a list.
-        """
-        relation_type = relation.get('relation', 'related_to')
-        target = relation.get('target', {})
-        
-        # Handle target as list or dict
-        if isinstance(target, list):
-            for t in target:
-                if isinstance(t, dict):
-                    self._extract_single_target(title, relation_type, t, results)
-        elif isinstance(target, dict):
-            self._extract_single_target(title, relation_type, target, results)
-        
-        # Extract other relation attributes (year, etc.)
-        for key, value in relation.items():
-            if key in ('relation', 'target'):
-                continue
-            key_path = [relation_type, key]
-            self._extract_recursive(title, value, key_path, results)
-    
-    def _extract_single_target(self, title: str, relation_type: str, target: Dict, results: List[Dict]):
-        """Extract from a single target entity."""
-        target_name = target.get('name') or target.get('title')
-        if target_name:
-            self._add_result(title, [relation_type], target_name, results)
-        
-        # Extract target's nested attributes
-        for key, value in target.items():
-            if key in ('type', 'subtype', 'name', 'title'):
-                continue
-            key_path = [relation_type, key]
-            self._extract_recursive(title, value, key_path, results)
-    
+            return str(value)
+
     def _add_result(
         self,
         title: str,
         key_path: List[str],
         value: Any,
-        results: List[Dict]
+        results: List[Dict],
+        is_relation: bool = False
     ):
         """Add a result to the accumulator."""
         if value is None:
             return
         
-        # Convert value to string
-        value_str = str(value)
+        # Convert value to string (JSON for complex objects) - kept for 'value' field
+        if isinstance(value, (dict, list)):
+            value_json = json.dumps(value, ensure_ascii=False)
+        else:
+            value_json = str(value)
         
         # Skip empty values
-        if not value_str.strip():
+        if not value_json.strip():
             return
         
         # Build key path string
@@ -220,14 +182,14 @@ class EmbeddingTextGenerator:
         
         # Generate natural language text
         if self.language == "ko":
-            text = self._format_korean(title, key_path, value_str)
+            text = self._format_korean(title, key_path, value_json)
         else:
-            text = self._format_english(title, key_path, value_str)
+            text = self._format_english(title, key_path, value, is_relation)
         
         results.append({
             'text': text,
             'key_path': key_path_str,
-            'value': value_str,
+            'value': value_json,
             'title': title
         })
     
@@ -239,14 +201,42 @@ class EmbeddingTextGenerator:
             path_str = "의 ".join(key_path)
             return f"{title}의 {path_str}은/는 {value}이다"
     
-    def _format_english(self, title: str, key_path: List[str], value: str) -> str:
-        """Format as English natural language."""
-        if len(key_path) == 1:
-            return f"The {key_path[0]} of {title} is {value}"
+    def _format_english(self, title: str, key_path: List[str], value: Any, is_relation: bool) -> str:
+        """
+        Format as English natural language.
+        
+        Attributes: "The {key} of {title} is {formatted_value}"
+        Relations: "{title} is {relation} {formatted_value}"
+        """
+        # Clean key path (replace underscores with spaces)
+        clean_keys = [k.replace('_', ' ') for k in key_path]
+        
+        if is_relation:
+            # Relation format: Title is Relation Value
+            relation_name = clean_keys[0]
+            
+            # Handle value for relation
+            if isinstance(value, dict) and 'target' in value:
+                # If target exists, use it as the primary value
+                # We ignore other keys in the relation dict as per instruction
+                val_str = self._format_value_natural(value['target'])
+            else:
+                # Fallback: format the whole value naturally
+                val_str = self._format_value_natural(value)
+            
+            return f"{title} is {relation_name} {val_str}"
+            
         else:
-            # "The name of the director of Title is Value"
-            path_str = " of the ".join(reversed(key_path))
-            return f"The {path_str} of {title} is {value}"
+            # Attribute format: The Key of Title is Value
+            
+            # Format value naturally
+            val_str = self._format_value_natural(value)
+            
+            if len(clean_keys) == 1:
+                return f"The {clean_keys[0]} of {title} is {val_str}"
+            else:
+                path_str = " of the ".join(reversed(clean_keys))
+                return f"The {path_str} of {title} is {val_str}"
 
 
 def generate_embedding_texts_from_db(
@@ -266,7 +256,7 @@ def generate_embedding_texts_from_db(
         List of all embedding text entries
     """
     print("="*80)
-    print("Generating Embedding Texts from Metadata")
+    print("Generating Embedding Texts from Metadata DB")
     print("="*80)
     
     generator = EmbeddingTextGenerator(language=language)
@@ -307,19 +297,58 @@ def generate_embedding_texts_from_db(
         json.dump(all_texts, f, ensure_ascii=False, indent=2)
     
     print(f"✓ Saved to {output_path}")
-    
-    # Statistics
-    print(f"\n[Statistics]")
-    print(f"  Total entries: {len(all_texts)}")
-    print(f"  Unique titles: {len(set(t['title'] for t in all_texts))}")
-    
-    # Sample output
-    print(f"\n[Sample Outputs - First 10]")
-    for i, text_entry in enumerate(all_texts[:10], 1):
-        print(f"  {i}. {text_entry['text'][:100]}...")
-    
     return all_texts
 
+def generate_embedding_texts_from_json(
+    json_path: str = 'HotpotQA/hotpotqa_sample_200_metadata.json',
+    output_path: str = 'HotpotQA/embedding_texts.json',
+    language: str = "ko"
+) -> List[Dict]:
+    """
+    Generate embedding texts from metadata JSON file (list of QA pairs with context_metadata).
+    """
+    print("="*80)
+    print("Generating Embedding Texts from Metadata JSON")
+    print("="*80)
+    
+    generator = EmbeddingTextGenerator(language=language)
+    
+    with open(json_path, 'r', encoding='utf-8') as f:
+        data = json.load(f)
+    
+    print(f"\nProcessing {len(data)} QA pairs...")
+    
+    all_texts = []
+    processed_titles = set()
+    
+    for idx, item in enumerate(data):
+        context_metadata = item.get('context_metadata', [])
+        for meta_entry in context_metadata:
+            title = meta_entry.get('title')
+            if not title or title in processed_titles:
+                continue
+            
+            processed_titles.add(title)
+            metadata = meta_entry.get('metadata', meta_entry)
+            
+            # Extract embedding texts
+            texts = generator.extract_embedding_texts(title, metadata)
+            all_texts.extend(texts)
+        
+        if (idx + 1) % 50 == 0:
+            print(f"  Processed {idx + 1}/{len(data)} QA pairs...")
+    
+    print(f"\n✓ Generated {len(all_texts)} embedding texts from {len(processed_titles)} unique entities")
+    
+    # Save to JSON
+    output_file = Path(output_path)
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+    
+    with open(output_file, 'w', encoding='utf-8') as f:
+        json.dump(all_texts, f, ensure_ascii=False, indent=2)
+    
+    print(f"✓ Saved to {output_path}")
+    return all_texts
 
 def test_single_metadata():
     """Test with a single metadata entry."""
@@ -406,13 +435,23 @@ def test_single_metadata():
 
 if __name__ == "__main__":
     import sys
+    import os
     
     if len(sys.argv) > 1 and sys.argv[1] == "--test":
         test_single_metadata()
     else:
-        # Generate from database (English only)
-        generate_embedding_texts_from_db(
-            db_path='HotpotQA/metadata_v3.db',
-            output_path='HotpotQA/embedding_texts.json',
-            language="en"
-        )
+        # Check for JSON first
+        json_path = 'HotpotQA/hotpotqa_sample_200_metadata.json'
+        if os.path.exists(json_path):
+            generate_embedding_texts_from_json(
+                json_path=json_path,
+                output_path='HotpotQA/embedding_texts.json',
+                language="en"
+            )
+        else:
+            # Fallback to DB
+            generate_embedding_texts_from_db(
+                db_path='HotpotQA/metadata_v3.db',
+                output_path='HotpotQA/embedding_texts.json',
+                language="en"
+            )

@@ -158,7 +158,7 @@ class NewMultihopPipelineV3NoDecomp:
                 {"role": "system", "content": "You are a precise question answering system. Give short, direct answers."},
                 {"role": "user", "content": prompt}
             ],
-            temperature=0.1,
+            temperature=0.0,
             max_tokens=100
         )
         

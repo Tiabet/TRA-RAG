@@ -86,7 +86,7 @@ async def process_question(client, retriever, item, k):
             {"role": "system", "content": "You are a precise question answering system."},
             {"role": "user", "content": prompt}
         ],
-        temperature=0.1,
+        temperature=0.0,
         max_tokens=50
     )
     
