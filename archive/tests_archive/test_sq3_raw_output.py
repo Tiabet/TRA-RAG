@@ -44,7 +44,7 @@ Answer: 1922"""
         messages=[
             {"role": "user", "content": formatted_prompt}
         ],
-        temperature=0.1,
+        temperature=0.0,
         max_tokens=1024
     )
     
