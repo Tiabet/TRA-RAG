@@ -164,7 +164,7 @@ async def decompose_query(
         # Log LLM interaction
         log_llm_call(
             call_type="Query Decomposition",
-            input_text=formatted_prompt,
+            input_text="OMITTED",
             output_text=result_text,
             context={"query": query}
         )
