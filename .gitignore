@@ -210,4 +210,4 @@ NodeRAG/
 musique/
 result/
 *txt
-
+*.graphgml
