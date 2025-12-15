@@ -97,7 +97,108 @@ class HybridPathRetriever:
         
         print(f"✓ Loaded {len(self.metadata)} paths")
         print(f"✓ BM25 weight: {bm25_weight}, Dense weight: {dense_weight}")
-    
+        
+        # Build title to indices map for fast lookup
+        self.title_to_indices = {}
+        print("Building title index...")
+        for idx, title in enumerate(self.titles):
+            if title not in self.title_to_indices:
+                self.title_to_indices[title] = []
+            self.title_to_indices[title].append(idx)
+            
+    def get_indices_for_title(self, title: str) -> List[int]:
+        """Get all path indices for a given title."""
+        return self.title_to_indices.get(title, [])
+
+    async def score_candidates_rrf(self, query: str, candidate_indices: List[int], top_k: int = 10) -> List[Dict]:
+        """
+        Score specific candidate paths using RRF of BM25 and Dense scores.
+        
+        Args:
+            query: The query string
+            candidate_indices: List of indices to score
+            top_k: Number of results to return
+            
+        Returns:
+            List of dicts with scored results
+        """
+        if not candidate_indices:
+            return []
+            
+        # 1. Dense Scores
+        # Embed query
+        query_embedding = await self.embed_query(query)
+        
+        # Get candidate embeddings
+        candidate_embeddings = self.embeddings_normalized[candidate_indices]
+        
+        # Compute Cosine Similarity (Dot product of normalized vectors)
+        dense_raw_scores = np.dot(candidate_embeddings, query_embedding)
+        
+        # 2. BM25 Scores
+        query_tokens = self.preprocess_query(query)
+        
+        bm25_raw_scores = np.zeros(len(candidate_indices))
+        
+        if query_tokens:
+            # We retrieve top-k where k is large enough to likely include our candidates
+            # or we can try to retrieve all. 
+            # bm25s.retrieve with k=len(self.titles) gets all non-zero scores?
+            # Actually, bm25s returns top-k. 
+            # Let's use k=50000 as a safe upper bound for now, but capped at corpus size.
+            bm25_k = min(50000, len(self.titles))
+            results, scores = self.bm25.retrieve([query_tokens], k=bm25_k)
+            
+            # Create a map for fast lookup
+            # results[0] are indices, scores[0] are scores
+            bm25_map = dict(zip(results[0], scores[0]))
+            
+            for i, idx in enumerate(candidate_indices):
+                bm25_raw_scores[i] = bm25_map.get(idx, 0.0)
+        
+        # 3. RRF Calculation
+        rrf_k = 60
+        
+        # Get ranks for Dense
+        # argsort gives indices that would sort the array. [::-1] reverses to descending.
+        # We need the rank of each item in the original array.
+        dense_sort_indices = np.argsort(dense_raw_scores)[::-1]
+        dense_ranks = np.zeros(len(candidate_indices), dtype=int)
+        for rank, i in enumerate(dense_sort_indices):
+            dense_ranks[i] = rank
+            
+        # Get ranks for BM25
+        bm25_sort_indices = np.argsort(bm25_raw_scores)[::-1]
+        bm25_ranks = np.zeros(len(candidate_indices), dtype=int)
+        for rank, i in enumerate(bm25_sort_indices):
+            bm25_ranks[i] = rank
+            
+        combined_scores = []
+        scored_candidates = []
+        
+        for i, idx in enumerate(candidate_indices):
+            # RRF Score
+            dense_rrf = 1.0 / (rrf_k + dense_ranks[i])
+            bm25_rrf = 1.0 / (rrf_k + bm25_ranks[i])
+            
+            combined = (self.dense_weight * dense_rrf) + (self.bm25_weight * bm25_rrf)
+            
+            scored_candidates.append({
+                'index': idx,
+                'title': str(self.titles[idx]),
+                'key_path': str(self.key_paths[idx]),
+                'value': str(self.values[idx]),
+                'score': float(combined),
+                'dense_score': float(dense_raw_scores[i]),
+                'bm25_score': float(bm25_raw_scores[i]),
+                'dense_rank': int(dense_ranks[i]),
+                'bm25_rank': int(bm25_ranks[i])
+            })
+            
+        scored_candidates.sort(key=lambda x: x['score'], reverse=True)
+        
+        return scored_candidates[:top_k]
+
     def preprocess_query(self, query: str) -> List[str]:
         """Preprocess query for BM25."""
         import re
@@ -196,35 +297,37 @@ class HybridPathRetriever:
         # Get dense results
         dense_results = await self.search_dense(query, dense_candidates)
         
-        # Normalize scores to [0, 1] range
-        bm25_scores = {}
+        # RRF (Reciprocal Rank Fusion)
+        # Score = 1 / (k + rank)
+        rrf_k = 60
+        
+        all_indices = set()
+        bm25_ranks = {}
         if bm25_results:
-            max_bm25 = max(s for _, s in bm25_results) if bm25_results else 1
-            min_bm25 = min(s for _, s in bm25_results) if bm25_results else 0
-            range_bm25 = max_bm25 - min_bm25 if max_bm25 != min_bm25 else 1
-            
-            for idx, score in bm25_results:
-                bm25_scores[idx] = (score - min_bm25) / range_bm25
+            for rank, (idx, _) in enumerate(bm25_results):
+                bm25_ranks[idx] = rank
+                all_indices.add(idx)
         
-        dense_scores = {}
+        dense_ranks = {}
         if dense_results:
-            max_dense = max(s for _, s in dense_results) if dense_results else 1
-            min_dense = min(s for _, s in dense_results) if dense_results else 0
-            range_dense = max_dense - min_dense if max_dense != min_dense else 1
-            
-            for idx, score in dense_results:
-                dense_scores[idx] = (score - min_dense) / range_dense
-        
-        # Combine scores
-        all_indices = set(bm25_scores.keys()) | set(dense_scores.keys())
+            for rank, (idx, _) in enumerate(dense_results):
+                dense_ranks[idx] = rank
+                all_indices.add(idx)
         
         combined_scores = []
         for idx in all_indices:
-            bm25_s = bm25_scores.get(idx, 0)
-            dense_s = dense_scores.get(idx, 0)
+            # Calculate RRF scores
+            bm25_score = 0.0
+            if idx in bm25_ranks:
+                bm25_score = 1.0 / (rrf_k + bm25_ranks[idx])
             
-            combined = self.bm25_weight * bm25_s + self.dense_weight * dense_s
-            combined_scores.append((idx, combined, bm25_s, dense_s))
+            dense_score = 0.0
+            if idx in dense_ranks:
+                dense_score = 1.0 / (rrf_k + dense_ranks[idx])
+            
+            # Weighted RRF
+            combined = (self.bm25_weight * bm25_score) + (self.dense_weight * dense_score)
+            combined_scores.append((idx, combined, bm25_score, dense_score))
         
         # Sort by combined score
         combined_scores.sort(key=lambda x: x[1], reverse=True)

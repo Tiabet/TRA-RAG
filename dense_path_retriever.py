@@ -93,8 +93,8 @@ class DensePathRetriever:
         self,
         query: str,
         top_k: int = 3,
-        bm25_candidates: int = 50,  # Ignored in Dense-only mode
-        dense_candidates: int = 50
+        bm25_candidates: int = 100,  # Ignored in Dense-only mode
+        dense_candidates: int = 100
     ) -> List[Dict]:
         """
         Dense-only search (same interface as hybrid for compatibility).
@@ -111,25 +111,26 @@ class DensePathRetriever:
         # Get dense results
         dense_results = await self.search_dense(query, max(dense_candidates, top_k))
         
-        # Normalize scores to [0, 1] range
-        if dense_results:
-            max_score = max(s for _, s in dense_results)
-            min_score = min(s for _, s in dense_results)
-            range_score = max_score - min_score if max_score != min_score else 1
-        
-        # Build results
+        # Z-score normalization
         results = []
-        for idx, score in dense_results[:top_k]:
-            normalized_score = (score - min_score) / range_score if dense_results else 0
-            results.append({
-                'index': idx,
-                'title': str(self.titles[idx]),
-                'key_path': str(self.key_paths[idx]),
-                'value': str(self.values[idx]),
-                'score': normalized_score,
-                'bm25_score': 0.0,
-                'dense_score': normalized_score
-            })
+        if dense_results:
+            scores = [s for _, s in dense_results]
+            mean_score = np.mean(scores)
+            std_score = np.std(scores)
+            if std_score == 0:
+                std_score = 1.0
+
+            for idx, score in dense_results[:top_k]:
+                normalized_score = (score - mean_score) / std_score
+                results.append({
+                    'index': idx,
+                    'title': str(self.titles[idx]),
+                    'key_path': str(self.key_paths[idx]),
+                    'value': str(self.values[idx]),
+                    'score': normalized_score,
+                    'bm25_score': 0.0,
+                    'dense_score': normalized_score
+                })
         
         return results
     
