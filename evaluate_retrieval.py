@@ -27,6 +27,12 @@ def get_retrieved_titles(result_item) -> Set[str]:
             elif isinstance(p, str):
                 titles.add(p)
     
+    # 1.1 Check retrieved_docs (simple list of titles)
+    if 'retrieved_docs' in result_item:
+        for t in result_item['retrieved_docs']:
+            if isinstance(t, str):
+                titles.add(t)
+
     # 2. Check decomposition for retrieved passages (for QD pipelines)
     decomposition = result_item.get('decomposition')
     if decomposition:
@@ -104,8 +110,9 @@ def evaluate(result_path, gold_path):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('--result_path', type=str, default ='Results/test_hotpot_v3_200_results.json', help='Path to result JSON file')
-    parser.add_argument('--gold_path', type=str, default='HotpotQA/hotpotqa_sample_200.json', help='Path to gold dataset')
+    parser.add_argument('--result_path', type=str, default ='Results/test_musique_v10_200_results_v1.json', help='Path to result JSON file')
+    parser.add_argument('--gold_path', type=str, default='MuSiQue/musique_sample_200.json', help='Path to gold dataset')
+    # parser.add_argument('--gold_path', type=str, default='HotpotQA/hotpotqa_sample_200.json', help='Path to gold dataset')
     args = parser.parse_args()
     
     evaluate(args.result_path, args.gold_path)

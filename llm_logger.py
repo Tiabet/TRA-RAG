@@ -53,23 +53,23 @@ class LLMLogger:
             f.write(f"Timestamp: {datetime.now()}\n")
             
             if context:
-                f.write(f"Context: {json.dumps(context, ensure_ascii=False, indent=2)}\n")
+                f.write("-" * 40 + " CONTEXT " + "-" * 40 + "\n")
+                # Pretty print context with specific ordering if possible
+                if isinstance(context, dict):
+                    for k, v in context.items():
+                        f.write(f"[{k.upper()}]:\n{v}\n\n")
+                else:
+                    f.write(f"{json.dumps(context, ensure_ascii=False, indent=2)}\n")
             
-            f.write("=" * 100 + "\n\n")
-            
-            # Input
-            f.write("-" * 100 + "\n")
-            f.write("INPUT:\n")
-            f.write("-" * 100 + "\n")
-            f.write(input_text + "\n")
-            f.write("-" * 100 + "\n\n")
+            # Input (Only show if not explicitly suppressed or empty)
+            if input_text and input_text.strip() and input_text != "OMITTED":
+                f.write("-" * 40 + " FULL PROMPT " + "-" * 40 + "\n")
+                f.write(input_text + "\n\n")
             
             # Output
-            f.write("-" * 100 + "\n")
-            f.write("OUTPUT:\n")
-            f.write("-" * 100 + "\n")
+            f.write("-" * 40 + " OUTPUT " + "-" * 40 + "\n")
             f.write(output_text + "\n")
-            f.write("-" * 100 + "\n\n")
+            f.write("=" * 100 + "\n\n")
     
     def log_error(self, call_type: str, error: str, context: Optional[Dict[str, Any]] = None):
         """Log an error during LLM call."""

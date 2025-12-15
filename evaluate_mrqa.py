@@ -288,7 +288,7 @@ def print_results(metrics: Dict[str, float], file_path: Path):
 def main():
     parser = argparse.ArgumentParser(description="MRQA Official Evaluation")
     parser.add_argument("file", type=str, nargs="?", 
-                        default="Results/NaiveRAG/NaiveRAG_passage_QD_musique.json",
+                        default="Results/test_musique_v10_200_results_v1.json",
                         help="Path to result JSON file")
     parser.add_argument("-v", "--verbose", action="store_true",
                         help="Print per-example results")
