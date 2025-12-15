@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 from dotenv import load_dotenv
 from openai import AsyncOpenAI
-from new_multihop_pipeline_v3 import NewMultihopPipelineV3
+from new_multihop_pipeline_no_link import NewMultihopPipelineV3
 from hybrid_path_retriever import HybridPathRetriever
 
 async def run_debug():

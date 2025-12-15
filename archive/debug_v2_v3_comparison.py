@@ -13,7 +13,7 @@ from dotenv import load_dotenv
 from openai import AsyncOpenAI
 
 from new_multihop_pipeline import NewMultihopPipeline
-from new_multihop_pipeline_v3 import NewMultihopPipelineV3
+from new_multihop_pipeline_no_link import NewMultihopPipelineV3
 from hybrid_path_retriever import HybridPathRetriever
 from llm_logger import init_logger, finalize_log
 

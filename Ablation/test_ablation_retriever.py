@@ -24,7 +24,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 from openai import AsyncOpenAI
 
-from new_multihop_pipeline_v3 import NewMultihopPipelineV3
+from new_multihop_pipeline_no_link import NewMultihopPipelineV3
 
 
 CONCURRENCY = 100
