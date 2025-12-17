@@ -61,6 +61,9 @@ class HybridPathRetriever:
         self.titles = data['titles']
         self.key_paths = data['key_paths']
         self.values = data['values']
+        self.doc_ids = data['doc_ids'] if 'doc_ids' in data.files else None
+        self.source_titles = data['source_titles'] if 'source_titles' in data.files else None
+        self.entity_titles = data['entity_titles'] if 'entity_titles' in data.files else None
         
         # Normalize embeddings for cosine similarity
         norms = np.linalg.norm(self.embeddings, axis=1, keepdims=True)
@@ -95,8 +98,8 @@ class HybridPathRetriever:
             self.embed_client = None
             print("Warning: Embedding client not configured. Dense search disabled.")
         
-        print(f"✓ Loaded {len(self.metadata)} paths")
-        print(f"✓ BM25 weight: {bm25_weight}, Dense weight: {dense_weight}")
+        print(f"[OK] Loaded {len(self.metadata)} paths")
+        print(f"[OK] BM25 weight: {bm25_weight}, Dense weight: {dense_weight}")
         
         # Build title to indices map for fast lookup
         self.title_to_indices = {}
@@ -105,6 +108,13 @@ class HybridPathRetriever:
             if title not in self.title_to_indices:
                 self.title_to_indices[title] = []
             self.title_to_indices[title].append(idx)
+
+    @staticmethod
+    def _opt_field(arr, idx):
+        if arr is None:
+            return None
+        v = arr[idx]
+        return None if v is None else str(v)
             
     def get_indices_for_title(self, title: str) -> List[int]:
         """Get all path indices for a given title."""
@@ -186,6 +196,9 @@ class HybridPathRetriever:
             scored_candidates.append({
                 'index': idx,
                 'title': str(self.titles[idx]),
+                'doc_id': self._opt_field(self.doc_ids, idx),
+                'source_title': self._opt_field(self.source_titles, idx),
+                'entity_title': self._opt_field(self.entity_titles, idx),
                 'key_path': str(self.key_paths[idx]),
                 'value': str(self.values[idx]),
                 'score': float(combined),
@@ -338,6 +351,9 @@ class HybridPathRetriever:
             results.append({
                 'index': idx,
                 'title': str(self.titles[idx]),
+                'doc_id': self._opt_field(self.doc_ids, idx),
+                'source_title': self._opt_field(self.source_titles, idx),
+                'entity_title': self._opt_field(self.entity_titles, idx),
                 'key_path': str(self.key_paths[idx]),
                 'value': str(self.values[idx]),
                 'score': combined,

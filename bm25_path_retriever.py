@@ -43,6 +43,9 @@ class BM25PathRetriever:
         self.titles = data['titles']
         self.key_paths = data['key_paths']
         self.values = data['values']
+        self.doc_ids = data['doc_ids'] if 'doc_ids' in data.files else None
+        self.source_titles = data['source_titles'] if 'source_titles' in data.files else None
+        self.entity_titles = data['entity_titles'] if 'entity_titles' in data.files else None
         
         # Stemmer for BM25 preprocessing
         self.stemmer = Stemmer.Stemmer('english')
@@ -60,8 +63,15 @@ class BM25PathRetriever:
             'only', 'own', 'same', 'so', 'than', 'too', 'very', 'just', 'also'
         }
         
-        print(f"✓ Loaded {len(self.metadata)} paths")
-        print(f"✓ BM25 Only Mode")
+        print(f"[OK] Loaded {len(self.metadata)} paths")
+        print(f"[OK] BM25 Only Mode")
+
+    @staticmethod
+    def _opt_field(arr, idx):
+        if arr is None:
+            return None
+        v = arr[idx]
+        return None if v is None else str(v)
     
     def preprocess_query(self, query: str) -> List[str]:
         """Preprocess query for BM25."""
@@ -135,6 +145,9 @@ class BM25PathRetriever:
             results.append({
                 'index': idx,
                 'title': str(self.titles[idx]),
+                'doc_id': self._opt_field(self.doc_ids, idx),
+                'source_title': self._opt_field(self.source_titles, idx),
+                'entity_title': self._opt_field(self.entity_titles, idx),
                 'key_path': str(self.key_paths[idx]),
                 'value': str(self.values[idx]),
                 'score': normalized_score,

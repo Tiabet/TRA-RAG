@@ -152,7 +152,7 @@ class PathEmbeddingGenerator:
         print(f"\n1. Loading texts from: {input_path}")
         with open(input_path, 'r', encoding='utf-8') as f:
             data = json.load(f)
-        print(f"   ✓ Loaded {len(data)} entries")
+        print(f"   [OK] Loaded {len(data)} entries")
         
         # Extract text field
         texts = [entry['text'] for entry in data]
@@ -165,21 +165,27 @@ class PathEmbeddingGenerator:
         embeddings = await self.embed_texts(texts)
         elapsed = time.time() - start_time
         
-        print(f"   ✓ Generated {len(embeddings)} embeddings")
-        print(f"   ✓ Shape: {embeddings.shape}")
-        print(f"   ✓ Time: {elapsed:.1f}s ({len(texts)/elapsed:.1f} texts/sec)")
+        print(f"   [OK] Generated {len(embeddings)} embeddings")
+        print(f"   [OK] Shape: {embeddings.shape}")
+        print(f"   [OK] Time: {elapsed:.1f}s ({len(texts)/elapsed:.1f} texts/sec)")
         
         # Save embeddings
         print(f"\n3. Saving embeddings to: {output_path}")
         
         # Save as compressed numpy
+        doc_ids = [e.get('doc_id') for e in data]
+        source_titles = [e.get('source_title') for e in data]
+        entity_titles = [e.get('entity_title') for e in data]
         np.savez_compressed(
             output_path,
             embeddings=embeddings,
             # Also save metadata for reference
             titles=np.array([e['title'] for e in data]),
             key_paths=np.array([e['key_path'] for e in data]),
-            values=np.array([e['value'] for e in data])
+            values=np.array([e['value'] for e in data]),
+            doc_ids=np.array(doc_ids, dtype=object),
+            source_titles=np.array(source_titles, dtype=object),
+            entity_titles=np.array(entity_titles, dtype=object)
         )
         
         # Also save a JSON index file for easy lookup
@@ -188,6 +194,9 @@ class PathEmbeddingGenerator:
             {
                 'idx': i,
                 'title': data[i]['title'],
+                'doc_id': data[i].get('doc_id'),
+                'source_title': data[i].get('source_title'),
+                'entity_title': data[i].get('entity_title'),
                 'key_path': data[i]['key_path'],
                 'value': data[i]['value'][:200] if len(data[i]['value']) > 200 else data[i]['value']
             }
@@ -196,7 +205,7 @@ class PathEmbeddingGenerator:
         with open(index_path, 'w', encoding='utf-8') as f:
             json.dump(index_data, f, ensure_ascii=False)
         
-        print(f"   ✓ Saved embeddings and index")
+        print(f"   [OK] Saved embeddings and index")
         
         # Statistics
         print(f"\n[Statistics]")
@@ -205,7 +214,7 @@ class PathEmbeddingGenerator:
         print(f"  File size: {Path(output_path).stat().st_size / 1024 / 1024:.1f} MB")
         
         print("\n" + "="*80)
-        print("✓ Path embeddings generated successfully!")
+        print("[OK] Path embeddings generated successfully!")
         print("="*80)
         
         return embeddings

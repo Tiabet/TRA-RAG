@@ -100,11 +100,29 @@ class BM25Indexer:
         
         # Combine: title + key + value
         return f"{title} {key_path} {value}"
+
+    def strip_stopwords_from_text(self, text: str) -> str:
+        """Remove stopwords from raw text (best-effort, English).
+
+        Note: We still apply stopword removal during tokenization in `preprocess()`.
+        This function exists to satisfy the requirement of stripping stopwords
+        from embedding_texts.json's `text` field before BM25 indexing.
+        """
+        if not text:
+            return ""
+
+        lowered = text.lower()
+        lowered = re.sub(r"[^\w\s]", " ", lowered)
+        tokens = lowered.split()
+        tokens = [t for t in tokens if t not in STOPWORDS and len(t) > 1]
+        return " ".join(tokens)
     
     def build_index(
         self,
         embedding_texts_path: str = 'HotpotQA/embedding_texts.json',
-        index_save_path: str = 'HotpotQA/bm25_index'
+        index_save_path: str = 'HotpotQA/bm25_index',
+        use_embedding_text_field: bool = False,
+        strip_stopwords_in_embedding_text: bool = False
     ):
         """
         Build BM25 index from embedding texts.
@@ -121,26 +139,31 @@ class BM25Indexer:
         print(f"\n1. Loading data from: {embedding_texts_path}")
         with open(embedding_texts_path, 'r', encoding='utf-8') as f:
             self.metadata = json.load(f)
-        print(f"   ✓ Loaded {len(self.metadata)} entries")
+        print(f"   [OK] Loaded {len(self.metadata)} entries")
         
         # Build corpus
         print(f"\n2. Building corpus...")
         self.corpus = []
         for entry in self.metadata:
-            text = self.build_bm25_text(entry)
+            if use_embedding_text_field and isinstance(entry, dict) and 'text' in entry:
+                text = entry.get('text', '')
+                if strip_stopwords_in_embedding_text:
+                    text = self.strip_stopwords_from_text(text)
+            else:
+                text = self.build_bm25_text(entry)
             self.corpus.append(text)
-        print(f"   ✓ Built {len(self.corpus)} documents")
+        print(f"   [OK] Built {len(self.corpus)} documents")
         
         # Tokenize corpus
         print(f"\n3. Tokenizing corpus...")
         corpus_tokens = [self.preprocess(doc) for doc in self.corpus]
-        print(f"   ✓ Tokenized (avg tokens/doc: {sum(len(t) for t in corpus_tokens)/len(corpus_tokens):.1f})")
+        print(f"   [OK] Tokenized (avg tokens/doc: {sum(len(t) for t in corpus_tokens)/len(corpus_tokens):.1f})")
         
         # Build BM25 index
         print(f"\n4. Building BM25 index...")
         self.index = bm25s.BM25()
         self.index.index(corpus_tokens)
-        print(f"   ✓ Index built")
+        print(f"   [OK] Index built")
         
         # Save index
         print(f"\n5. Saving index to: {index_save_path}")
@@ -151,7 +174,7 @@ class BM25Indexer:
         metadata_path = Path(index_save_path) / 'metadata.json'
         with open(metadata_path, 'w', encoding='utf-8') as f:
             json.dump(self.metadata, f, ensure_ascii=False)
-        print(f"   ✓ Saved index and metadata")
+        print(f"   [OK] Saved index and metadata")
         
         # Statistics
         print(f"\n[Statistics]")
@@ -160,7 +183,7 @@ class BM25Indexer:
         print(f"  Index location: {index_save_path}")
         
         print("\n" + "="*80)
-        print("✓ BM25 Index built successfully!")
+        print("[OK] BM25 Index built successfully!")
         print("="*80)
     
     def load_index(self, index_path: str = 'HotpotQA/bm25_index'):
@@ -174,7 +197,7 @@ class BM25Indexer:
         with open(metadata_path, 'r', encoding='utf-8') as f:
             self.metadata = json.load(f)
         
-        print(f"✓ Loaded index with {len(self.metadata)} documents")
+        print(f"[OK] Loaded index with {len(self.metadata)} documents")
     
     def search(
         self,

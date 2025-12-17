@@ -8,7 +8,6 @@ Structure: title + key path + value
 Format: "{title}의 {key_path}는 {value}이다" (Korean)
     or: "The {key_path} of {title} is {value}" (English)
 
-Ignores: type, subtype (meaningless for embedding)
 Includes: ALL values (strings, numbers, lists, nested objects)
 """
 
@@ -50,15 +49,15 @@ class EmbeddingTextGenerator:
         # Extract from attributes
         if 'attributes' in inner_metadata:
             for key, value in inner_metadata['attributes'].items():
-                # Skip type/subtype
-                if key in ('type', 'subtype'):
-                    continue
-                
-                # Clean value (remove type/subtype from nested dicts)
+                # Clean value
                 cleaned_value = self._clean_value(value)
-                
-                # Add result (Attribute type)
-                self._add_result(title, [key], cleaned_value, results, is_relation=False)
+
+                # If this is a list of dicts (e.g., rivers, bridges), split into per-item paths
+                if self._is_list_of_dicts(cleaned_value):
+                    self._add_list_of_dict_items(title, [key], cleaned_value, results, is_relation=False)
+                else:
+                    # Add result (Attribute type)
+                    self._add_result(title, [key], cleaned_value, results, is_relation=False)
         
         # Extract from relations
         if 'relations' in inner_metadata:
@@ -79,15 +78,19 @@ class EmbeddingTextGenerator:
                 # Add result (Relation type)
                 self._add_result(title, [relation_type], cleaned_value, results, is_relation=True)
         
-        # Extract top-level fields (excluding type, subtype, title, attributes, relations, metadata)
-        skip_keys = {'type', 'subtype', 'title', 'attributes', 'relations', 'metadata'}
+        # Extract top-level fields (excluding wrapper keys)
+        skip_keys = {'title', 'attributes', 'relations', 'metadata'}
         for key, value in inner_metadata.items():
             if key in skip_keys:
                 continue
             
             cleaned_value = self._clean_value(value)
             print(f"DEBUG: Key={key}, Type={type(cleaned_value)}")
-            self._add_result(title, [key], cleaned_value, results, is_relation=False)
+
+            if self._is_list_of_dicts(cleaned_value):
+                self._add_list_of_dict_items(title, [key], cleaned_value, results, is_relation=False)
+            else:
+                self._add_result(title, [key], cleaned_value, results, is_relation=False)
             
             # [Hybrid Approach] Also add flattened leaf nodes for complex objects
             # This ensures specific details are not lost in the grouped text
@@ -110,22 +113,60 @@ class EmbeddingTextGenerator:
             for k, v in value.items():
                 self._add_flattened_results(title, current_path + [k], v, results)
         elif isinstance(value, list):
-            for item in value:
-                self._add_flattened_results(title, current_path, item, results)
+            for i, item in enumerate(value):
+                seg = None
+                if isinstance(item, dict):
+                    seg = self._pick_item_label(item)
+                seg = self._sanitize_path_segment(seg) if seg else f"[{i}]"
+                self._add_flattened_results(title, current_path + [seg], item, results)
         else:
             # Leaf node
             self._add_result(title, current_path, value, results, is_relation=False)
 
+    def _is_list_of_dicts(self, value: Any) -> bool:
+        return isinstance(value, list) and len(value) > 0 and all(isinstance(x, dict) for x in value)
+
+    def _pick_item_label(self, item: Dict[str, Any]) -> str:
+        """Pick a stable, human-readable identifier for list-of-dict items."""
+        for k in ('name', 'title', 'id'):
+            v = item.get(k)
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+        return ""
+
+    def _sanitize_path_segment(self, seg: str) -> str:
+        seg = seg.replace('.', '_')
+        seg = seg.replace('\n', ' ').replace('\r', ' ').strip()
+        # Keep it reasonably short to avoid huge key_path strings
+        if len(seg) > 80:
+            seg = seg[:80]
+        return seg
+
+    def _add_list_of_dict_items(
+        self,
+        title: str,
+        base_path: List[str],
+        items: List[Dict[str, Any]],
+        results: List[Dict],
+        is_relation: bool = False
+    ):
+        """Add one embedding entry per dict item in a list.
+
+        Example:
+          rivers -> rivers.River Test (value is the whole river dict)
+        """
+        for i, item in enumerate(items):
+            label = self._pick_item_label(item)
+            seg = self._sanitize_path_segment(label) if label else f"[{i}]"
+            # Store the whole object as value (keeps nested info like bridges together)
+            self._add_result(title, base_path + [seg], item, results, is_relation=is_relation)
+
     def _clean_value(self, value: Any) -> Any:
         """
-        Recursively remove type and subtype from dictionary values.
+        Recursively normalize values.
         """
         if isinstance(value, dict):
-            return {
-                k: self._clean_value(v)
-                for k, v in value.items()
-                if k not in ('type', 'subtype')
-            }
+            return {k: self._clean_value(v) for k, v in value.items()}
         elif isinstance(value, list):
             return [self._clean_value(item) for item in value]
         else:
@@ -267,19 +308,42 @@ def generate_embedding_texts_from_db(
     cursor = conn.cursor()
     
     # Get all metadata entries
-    cursor.execute("SELECT title, metadata_json FROM metadata")
-    rows = cursor.fetchall()
+    # Support both the new schema (doc_id/source_title/entity_title) and legacy (title).
+    try:
+        cursor.execute("SELECT doc_id, source_title, entity_title, metadata_json FROM metadata")
+        rows = cursor.fetchall()
+        schema_mode = "v2"
+    except Exception:
+        cursor.execute("SELECT title, metadata_json FROM metadata")
+        rows = cursor.fetchall()
+        schema_mode = "legacy"
     
     print(f"\nProcessing {len(rows)} metadata entries...")
     
     all_texts = []
     
     for idx, row in enumerate(rows):
-        title = row['title']
-        metadata = json.loads(row['metadata_json'])
+        if schema_mode == "v2":
+            doc_id = row['doc_id']
+            source_title = row['source_title']
+            entity_title = row['entity_title']
+            metadata = json.loads(row['metadata_json'])
+        else:
+            doc_id = None
+            source_title = row['title']
+            entity_title = row['title']
+            metadata = json.loads(row['metadata_json'])
         
         # Extract embedding texts
-        texts = generator.extract_embedding_texts(title, metadata)
+        # IMPORTANT:
+        # - Use entity_title (metadata title) in the embedding text.
+        # - Keep source_title (outer title) for later passage lookup + evaluation.
+        texts = generator.extract_embedding_texts(entity_title, metadata)
+        for t in texts:
+            if doc_id is not None:
+                t['doc_id'] = doc_id
+            t['source_title'] = source_title
+            t['entity_title'] = entity_title
         all_texts.extend(texts)
         
         if (idx + 1) % 500 == 0:
@@ -287,7 +351,7 @@ def generate_embedding_texts_from_db(
     
     conn.close()
     
-    print(f"\n✓ Generated {len(all_texts)} embedding texts")
+    print(f"\n[OK] Generated {len(all_texts)} embedding texts")
     
     # Save to JSON
     output_file = Path(output_path)
@@ -296,7 +360,7 @@ def generate_embedding_texts_from_db(
     with open(output_file, 'w', encoding='utf-8') as f:
         json.dump(all_texts, f, ensure_ascii=False, indent=2)
     
-    print(f"✓ Saved to {output_path}")
+    print(f"[OK] Saved to {output_path}")
     return all_texts
 
 def generate_embedding_texts_from_json(
@@ -319,26 +383,33 @@ def generate_embedding_texts_from_json(
     print(f"\nProcessing {len(data)} QA pairs...")
     
     all_texts = []
-    processed_titles = set()
     
     for idx, item in enumerate(data):
+        qid = item.get('_id') or item.get('id') or str(idx)
         context_metadata = item.get('context_metadata', [])
-        for meta_entry in context_metadata:
-            title = meta_entry.get('title')
-            if not title or title in processed_titles:
+        for ci, meta_entry in enumerate(context_metadata):
+            source_title = meta_entry.get('title')
+            if not source_title:
                 continue
-            
-            processed_titles.add(title)
+
             metadata = meta_entry.get('metadata', meta_entry)
+            entity_title = (metadata or {}).get('title') or source_title
+            doc_id = f"{qid}::ctx{ci}"
             
             # Extract embedding texts
-            texts = generator.extract_embedding_texts(title, metadata)
+            texts = generator.extract_embedding_texts(entity_title, metadata)
+            for t in texts:
+                t['doc_id'] = doc_id
+                t['source_title'] = source_title
+                t['entity_title'] = entity_title
             all_texts.extend(texts)
         
         if (idx + 1) % 50 == 0:
             print(f"  Processed {idx + 1}/{len(data)} QA pairs...")
     
-    print(f"\n✓ Generated {len(all_texts)} embedding texts from {len(processed_titles)} unique entities")
+    unique_doc_ids = len(set(t.get('doc_id') for t in all_texts if t.get('doc_id')))
+    unique_entity_titles = len(set(t.get('entity_title') for t in all_texts if t.get('entity_title')))
+    print(f"\n[OK] Generated {len(all_texts)} embedding texts from {unique_doc_ids} docs ({unique_entity_titles} entity titles)")
     
     # Save to JSON
     output_file = Path(output_path)
@@ -347,7 +418,7 @@ def generate_embedding_texts_from_json(
     with open(output_file, 'w', encoding='utf-8') as f:
         json.dump(all_texts, f, ensure_ascii=False, indent=2)
     
-    print(f"✓ Saved to {output_path}")
+    print(f"[OK] Saved to {output_path}")
     return all_texts
 
 def test_single_metadata():
@@ -430,7 +501,7 @@ def test_single_metadata():
     for i, entry in enumerate(texts_en, 1):
         print(f"{i:2d}. {entry['text']}")
     
-    print(f"\n✓ Total texts generated: {len(texts_ko)}")
+    print(f"\n[OK] Total texts generated: {len(texts_ko)}")
 
 
 if __name__ == "__main__":
