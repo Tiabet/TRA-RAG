@@ -110,9 +110,9 @@ def evaluate(result_path, gold_path):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('--result_path', type=str, default ='Results/test_musique_v10_200_results_v1.json', help='Path to result JSON file')
-    parser.add_argument('--gold_path', type=str, default='MuSiQue/musique_sample_200.json', help='Path to gold dataset')
-    # parser.add_argument('--gold_path', type=str, default='HotpotQA/hotpotqa_sample_200.json', help='Path to gold dataset')
+    parser.add_argument('--result_path', type=str, default ='Results/test_hotpot_v11_200_results.json', help='Path to result JSON file')
+    # parser.add_argument('--gold_path', type=str, default='MuSiQue/musique_sample_200.json', help='Path to gold dataset')
+    parser.add_argument('--gold_path', type=str, default='HotpotQA/hotpotqa_sample_200.json', help='Path to gold dataset')
     args = parser.parse_args()
     
     evaluate(args.result_path, args.gold_path)
