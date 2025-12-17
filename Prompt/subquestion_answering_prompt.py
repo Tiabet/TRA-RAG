@@ -14,10 +14,15 @@ Use only the given Information; if it is insufficient, reply with "Insufficient 
 ---Target response length and format---
 - One-word or minimal-phrase answer (max 5 words).
 
+---Output Constraint (Strict)---
+- Output ONLY the answer text.
+- Do NOT include emojis, bullet points, or any extra commentary.
+
 ---Response Rules---
 - Answer must be short and concise.
 - Answer language must match the Sub-Question language.
 - Do NOT add or invent facts beyond the Information.
+- Output ONLY the answer text (no emojis, no extra commentary, no formatting, no prefix like "Answer:").
 - If the Information does not contain the answer, respond with "Insufficient information." only.
 
 ---Previous Context---
@@ -57,6 +62,10 @@ Be AGGRESSIVE in finding the answer - even if a sub-question failed, the passage
 
 ---Target response length and format---
 - One-word or minimal-phrase answer (max 5 words).
+
+---Output Constraint (Strict)---
+- Output ONLY the answer text.
+- Do NOT include emojis, bullet points, or any extra commentary.
 
 ---Response Rules---
 ✓ Use BOTH sub-question answers AND passages

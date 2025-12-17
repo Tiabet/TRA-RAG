@@ -82,10 +82,16 @@ Answer: "2003" ✓ (Found in metadata fields)
 
 ---Response Format---
 - SHORT, DIRECT answer (typically 1-10 words)
+- Output ONLY the answer text (no extra explanation, no quotation marks)
+- Do NOT include emojis, bullet points, or any decorative characters
 - Use the same language as the Sub-Question
 - For names: Use full names if available (e.g., "Ferdinand Magellan")
 - For dates: Be precise (e.g., "1998" not "late 1990s")
 - For lists: Include all relevant items (e.g., "Estonia, Latvia, Lithuania")
+
+---Output Strictness (IMPORTANT)---
+- Output ONLY the answer text.
+- Do NOT include emojis, extra commentary, explanations, quotes, bullet points, or prefixes (e.g., "Answer:").
 
 ---CRITICAL: When to Say "Insufficient information"---
 ONLY respond "Insufficient information." if ALL of the following are true:
@@ -138,6 +144,10 @@ Be AGGRESSIVE in finding the answer - check passage titles, all metadata fields,
 ---Target response length and format---
 - One-word or minimal-phrase answer (max 5 words).
 
+---Output Constraint (Strict)---
+- Output ONLY the answer text.
+- Do NOT include emojis, bullet points, or any extra commentary.
+
 ---Response Rules---
 ✓ Check passage TITLES first (answer might be in the title!)
 ✓ Check ALL metadata fields thoroughly (description, main_entity, attributes, events, relations, etc.)
@@ -145,6 +155,7 @@ Be AGGRESSIVE in finding the answer - check passage titles, all metadata fields,
 ✓ You CAN perform simple reasoning (arithmetic, temporal logic, relationship inference)
 ✓ Example: "2300 - 1000" → calculate 1300
 ✓ If you find the information anywhere in passages, USE IT
+✓ Output ONLY the answer text (no emojis, no extra words)
 ✗ Answer must be short and concise
 ✗ Answer language must match the Sub-Question language
 ✗ Do NOT use external knowledge not in passages
