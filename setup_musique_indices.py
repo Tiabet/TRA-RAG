@@ -17,7 +17,8 @@ async def main():
     print("\n[Step 1] Generating Metadata DB...")
     convert_metadata_to_db(
         metadata_json_path='MuSiQue/musique_sample_200_metadata.json',
-        db_path='MuSiQue/metadata_v3.db'
+        db_path='MuSiQue/metadata_v3.db',
+        dedup_by_title=False
     )
 
     # 2. Generate Embedding Texts
@@ -41,7 +42,9 @@ async def main():
     indexer = BM25Indexer(use_stemming=True)
     indexer.build_index(
         embedding_texts_path='MuSiQue/embedding_texts.json',
-        index_save_path='MuSiQue/bm25_index'
+        index_save_path='MuSiQue/bm25_index',
+        use_embedding_text_field=True,
+        strip_stopwords_in_embedding_text=True
     )
     
     print("\nAll MuSiQue indices generated successfully!")
