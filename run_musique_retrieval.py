@@ -40,7 +40,7 @@ async def process_single_question(pipeline, item, idx, total):
                     for p in sq.get('retrieved_passages', []):
                         retrieved_docs.add(p['title'])
             
-            print(f"[{idx+1:3d}/{total}] ✓ ({elapsed:.1f}s) {question[:50]}...")
+            print(f"[{idx+1:3d}/{total}] [OK] ({elapsed:.1f}s) {question[:50]}...")
             
             return {
                 'question_id': qid,
