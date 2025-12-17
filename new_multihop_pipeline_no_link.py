@@ -75,7 +75,7 @@ class NewMultihopPipelineV3:
         # Load original passages indexed by title
         self.original_passages = self._load_original_passages(hotpotqa_path)
         if self.verbose:
-            print(f"✓ Loaded {len(self.original_passages)} original passages")
+            print(f"[OK] Loaded {len(self.original_passages)} original passages")
         
         # Connect to database for metadata lookup (optional, for debugging)
         self.conn = sqlite3.connect(db_path)
@@ -105,16 +105,34 @@ class NewMultihopPipelineV3:
         """Get original passage text for a title."""
         return self.original_passages.get(title)
     
-    def get_full_metadata(self, title: str) -> Optional[Dict]:
-        """Get full metadata for a title from database."""
+    def get_full_metadata(self, title: str, doc_id: Optional[str] = None) -> Optional[Dict]:
+        """Get full metadata from database (doc_id-aware, legacy fallback)."""
         cursor = self.conn.cursor()
-        cursor.execute(
-            "SELECT metadata_json FROM metadata WHERE title = ?",
-            (title,)
-        )
-        row = cursor.fetchone()
-        if row:
-            return json.loads(row['metadata_json'])
+
+        if doc_id:
+            try:
+                cursor.execute(
+                    "SELECT metadata_json FROM metadata WHERE doc_id = ?",
+                    (doc_id,)
+                )
+                row = cursor.fetchone()
+                if row:
+                    return json.loads(row['metadata_json'])
+            except Exception:
+                # Legacy schema fallback below
+                pass
+
+        try:
+            cursor.execute(
+                "SELECT metadata_json FROM metadata WHERE title = ?",
+                (title,)
+            )
+            row = cursor.fetchone()
+            if row:
+                return json.loads(row['metadata_json'])
+        except Exception:
+            return None
+
         return None
     
     async def retrieve_for_query(self, query: str) -> List[Dict]:
@@ -132,27 +150,31 @@ class NewMultihopPipelineV3:
         fetch_k = self.top_k * 10
         paths = await self.retriever.search_hybrid(query, top_k=fetch_k)
         
-        # Get unique titles until we have top_k
-        seen_titles = set()
+        # Get unique source titles until we have top_k
+        seen_source_titles = set()
         passages = []
         
         for path in paths:
             if len(passages) >= self.top_k:
                 break
                 
-            title = path['title']
-            if title in seen_titles:
+            entity_title = path['title']
+            source_title = path.get('source_title') or entity_title
+            if source_title in seen_source_titles:
                 continue
-            seen_titles.add(title)
+            seen_source_titles.add(source_title)
             
             # Get original passage
-            original_passage = self.get_original_passage(title)
+            original_passage = self.get_original_passage(source_title)
             
             # Get metadata (for reference)
-            metadata = self.get_full_metadata(title)
+            metadata = self.get_full_metadata(entity_title, doc_id=path.get('doc_id'))
             
             passages.append({
-                'title': title,
+                'title': source_title,
+                'source_title': source_title,
+                'entity_title': entity_title,
+                'doc_id': path.get('doc_id'),
                 'original_passage': original_passage,
                 'metadata': metadata,
                 'matched_path': path['key_path'],
@@ -339,7 +361,7 @@ class NewMultihopPipelineV3:
                 if p.get('metadata'):
                     metadata = p['metadata']
                     parts = [f"[{i}] {title}"]
-                    excluded_keys = {'title', 'type', 'subtype'}
+                    excluded_keys = {'title'}
                     for key, value in metadata.items():
                         if key not in excluded_keys and value:
                             value_str = str(value) if not isinstance(value, (dict, list)) else json.dumps(value, ensure_ascii=False)
