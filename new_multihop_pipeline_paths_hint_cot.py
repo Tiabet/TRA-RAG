@@ -619,6 +619,7 @@ class NewMultihopPipelineV11PathsHintCoT:
     ) -> Dict:
         try:
             actual_question = substitute_answers(sq.question, decomposition.subquestions)
+            setattr(sq, 'actual_question', actual_question)
             # SQ answering: previous context is intentionally NOT used (user request).
             previous_context = ""
 
@@ -714,12 +715,27 @@ class NewMultihopPipelineV11PathsHintCoT:
             return {
                 'success': True,
                 'final_answer': final_answer,
+                # Final-only retrieval artifacts (doc_id-based), for @k evaluation.
+                'final_retrieved_passages': [
+                    {
+                        'doc_id': p.get('doc_id'),
+                        'title': p.get('title'),
+                    }
+                    for p in (final_passages or [])
+                ],
+                'final_retrieved_paths': [
+                    {
+                        'doc_id': p.get('doc_id'),
+                    }
+                    for p in (final_paths or [])
+                ],
                 'decomposition': {
                     'main_query': decomposition.main_query,
                     'subquestions': [
                         {
                             'id': sq.id,
                             'question': sq.question,
+                            'actual_question': getattr(sq, 'actual_question', None),
                             'answer': sq.answer,
                             'depends_on': sq.depends_on,
                             'retrieved_passages': getattr(sq, 'retrieved_passages', []),

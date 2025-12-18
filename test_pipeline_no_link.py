@@ -77,6 +77,8 @@ async def process_single_question(pipeline, item, idx, total):
                 'time': elapsed,
                 'num_passages': num_passages,
                 'num_paths': result.get('num_paths', None),
+                'final_retrieved_passages': result.get('final_retrieved_passages', None),
+                'final_retrieved_paths': result.get('final_retrieved_paths', None),
                 'success': True,
                 'decomposition': result.get('decomposition')
             }
@@ -259,6 +261,8 @@ async def run_test(args):
                 'top_k': top_k_passages,
                 'top_k_passages': top_k_passages,
                 'top_k_paths': top_k_paths,
+                'path_fetch_k_input': getattr(pipeline, 'path_fetch_k_input', None),
+                'path_fetch_k_effective': getattr(pipeline, 'path_fetch_k', None),
                 'bm25_weight': 0.4,
                 'dense_weight': 0.6
             },

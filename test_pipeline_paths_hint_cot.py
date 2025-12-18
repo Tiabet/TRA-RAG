@@ -36,8 +36,8 @@ DEFAULT_DB_PATH = 'MuSiQue/metadata_v4aligned.db'
 DEFAULT_BM25_INDEX = 'MuSiQue/bm25_index_v4aligned'
 DEFAULT_EMBEDDINGS = 'MuSiQue/path_embeddings_v4aligned.npz'
 
-DEFAULT_OUTPUT_MUSIQUE = 'Results/test_musique_v12_ragpcot_results_v4aligned.json'
-DEFAULT_OUTPUT_HOTPOT = 'Results/test_hotpot_v12_ragcot_results_v4aligned.json'
+DEFAULT_OUTPUT_MUSIQUE = 'Results/test_musique_v12_ragcot_results_v4aligned_v1.json'
+DEFAULT_OUTPUT_HOTPOT = 'Results/test_hotpot_v12_ragcot_results_v4aligned_v1.json'
 
 DATASET_DEFAULTS = {
     'musique': {
@@ -114,6 +114,8 @@ async def process_one(pipeline, item, idx, total):
                 'num_paths': result.get('num_paths', None),
                 # Preferred naming
                 'num_facts': result.get('num_facts', result.get('num_paths', None)),
+                'final_retrieved_passages': result.get('final_retrieved_passages', None),
+                'final_retrieved_paths': result.get('final_retrieved_paths', None),
                 'success': True,
                 'decomposition': result.get('decomposition'),
             }
@@ -235,6 +237,8 @@ async def main():
             'concurrency': args.concurrency,
             'top_k_passages': 5,
             'top_k_paths': 30,
+            'path_fetch_k_input': 50,
+            'path_fetch_k_effective': getattr(pipeline, 'path_fetch_k', None),
             'elapsed_sec': elapsed,
             'success': success_count,
             'fail': fail_count,

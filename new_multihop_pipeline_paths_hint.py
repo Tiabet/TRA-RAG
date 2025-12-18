@@ -63,7 +63,10 @@ class NewMultihopPipelineV11PathsHint:
         self.db_path = db_path
         self.top_k_passages = top_k_passages
         self.top_k_paths = top_k_paths
-        self.path_fetch_k = max(path_fetch_k, top_k_paths, top_k_passages)
+        # For top-k UNIQUE paths, we often need to fetch much more than k due to duplicates.
+        # Store the effective fetch-k so metadata/logging matches actual behavior.
+        self.path_fetch_k_input = path_fetch_k
+        self.path_fetch_k = max(path_fetch_k, top_k_paths * 10, top_k_passages * 10, 100)
         self.verbose = verbose
 
         self.original_passages, self.doc_id_passages = self._load_passage_indices(hotpotqa_path)
@@ -516,6 +519,7 @@ class NewMultihopPipelineV11PathsHint:
     ) -> Dict:
         try:
             actual_question = substitute_answers(sq.question, decomposition.subquestions)
+            setattr(sq, 'actual_question', actual_question)
             previous_context = self._build_simple_previous_context(sq, decomposition)
 
             passages, top_paths = await self.retrieve_for_query(actual_question)
@@ -609,12 +613,27 @@ class NewMultihopPipelineV11PathsHint:
             return {
                 'success': True,
                 'final_answer': final_answer,
+                # Final-only retrieval artifacts (doc_id-based), for @k evaluation.
+                'final_retrieved_passages': [
+                    {
+                        'doc_id': p.get('doc_id'),
+                        'title': p.get('title'),
+                    }
+                    for p in (final_passages or [])
+                ],
+                'final_retrieved_paths': [
+                    {
+                        'doc_id': p.get('doc_id'),
+                    }
+                    for p in (final_paths or [])
+                ],
                 'decomposition': {
                     'main_query': decomposition.main_query,
                     'subquestions': [
                         {
                             'id': sq.id,
                             'question': sq.question,
+                            'actual_question': getattr(sq, 'actual_question', None),
                             'answer': sq.answer,
                             'depends_on': sq.depends_on,
                             'retrieved_passages': getattr(sq, 'retrieved_passages', []),
@@ -623,7 +642,6 @@ class NewMultihopPipelineV11PathsHint:
                         for sq in decomposition.subquestions
                     ],
                 },
-                'num_passages': len(all_passages),
                 'num_passages': len(final_passages),
                 'num_paths': len(final_paths),
                 'time': elapsed,

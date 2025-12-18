@@ -189,6 +189,104 @@ def get_retrieved_doc_ids(result_item: Dict, sources: str = 'both') -> Set[str]:
     return doc_ids
 
 
+def get_final_retrieved_doc_ids_at_k(result_item: Dict, k: int = 5, sources: str = 'passages') -> Set[str]:
+    """Extract doc_ids for final-answer retrieval only, truncated to @k.
+
+    Expected fields (emitted by v11 pipelines):
+      - final_retrieved_passages: List[{doc_id, title, ...}] (ordered)
+      - final_retrieved_paths: List[{doc_id, ...}] (optional)
+
+    sources: 'passages' | 'paths' | 'both'
+    """
+    doc_ids: List[str] = []
+
+    def _safe_score(p: Dict) -> float:
+        try:
+            s = p.get('score', None)
+            return float(s) if s is not None else float('-inf')
+        except Exception:
+            return float('-inf')
+
+    def _path_dedupe_key(p: Dict) -> Tuple[str, str, str, str]:
+        source_title = p.get('source_title') or p.get('title') or ''
+        entity_title = p.get('entity_title') or p.get('title') or ''
+        key_path = p.get('key_path', '')
+        value = p.get('value', '')
+        return (str(source_title), str(entity_title), str(key_path), str(value))
+
+    def _push(value):
+        if not value:
+            return
+        if isinstance(value, str):
+            doc_ids.append(value)
+        elif isinstance(value, (int, float)):
+            doc_ids.append(str(value))
+
+    if sources in ('passages', 'both'):
+        for p in (result_item.get('final_retrieved_passages') or []):
+            if isinstance(p, dict):
+                _push(p.get('doc_id'))
+            else:
+                _push(p)
+
+    if sources in ('paths', 'both'):
+        for p in (result_item.get('final_retrieved_paths') or []):
+            if isinstance(p, dict):
+                _push(p.get('doc_id'))
+            else:
+                _push(p)
+
+    # Fallback for older result files: derive final doc_ids from decomposition.retrieved_paths.
+    # This matches the pipeline's final selection logic:
+    #   - collect UNIQUE paths across SQs
+    #   - sort by score desc
+    #   - take top-30
+    #   - choose first k unique doc_ids
+    if not doc_ids:
+        decomposition = result_item.get('decomposition') or {}
+        subqs = []
+        if isinstance(decomposition, dict):
+            subqs = decomposition.get('subquestions', []) or []
+        elif isinstance(decomposition, list):
+            subqs = decomposition
+
+        seen_path = set()
+        unique_paths: List[Dict] = []
+        for sq in subqs:
+            for p in (sq.get('retrieved_paths') or []):
+                if not isinstance(p, dict):
+                    continue
+                key = _path_dedupe_key(p)
+                if key in seen_path:
+                    continue
+                seen_path.add(key)
+                unique_paths.append(p)
+
+        unique_paths_sorted = sorted(unique_paths, key=_safe_score, reverse=True)
+        top_paths = unique_paths_sorted[:30]
+        for p in top_paths:
+            # Final passages are selected by doc_id from high-score paths,
+            # so doc_id_sources='passages' can safely use this fallback too.
+            if sources not in ('passages', 'paths', 'both'):
+                break
+            if isinstance(p, dict):
+                _push(p.get('doc_id'))
+
+    # Preserve order but enforce uniqueness
+    seen = set()
+    ordered_unique = []
+    for d in doc_ids:
+        ds = str(d)
+        if not ds or ds in seen:
+            continue
+        seen.add(ds)
+        ordered_unique.append(ds)
+        if len(ordered_unique) >= k:
+            break
+
+    return set(ordered_unique)
+
+
 def _analyze_title_uniqueness(gold_data: List[Dict]) -> Dict[str, int]:
     """Quick diagnostics to surface title ambiguity issues (esp. MuSiQue vs HotpotQA)."""
     per_item_ambiguous = 0
@@ -218,9 +316,20 @@ def evaluate(
     check_mapping: bool = False,
     resolve_titles_from_doc_id: bool = False,
     doc_id_sources: str = 'both',
+    scope: str = 'final',
+    at_k: int = 5,
 ):
     results = load_json(result_path)
     gold_data = load_json(gold_path)
+
+    print("=" * 90)
+    print("[evaluate_retrieval] Running evaluation")
+    print(f"result_path: {result_path}")
+    print(f"gold_path:   {gold_path}")
+    print(f"key:         {key}")
+    print(f"scope:       {scope}{'@'+str(at_k) if (key=='doc_id' and scope=='final') else ''}")
+    print(f"doc_id_sources: {doc_id_sources}")
+    print("=" * 90)
     
     # Create a map for gold data
     gold_map = {item['_id']: item for item in gold_data}
@@ -267,6 +376,7 @@ def evaluate(
     ambiguous_titles_total = 0
     retrieved_doc_ids_total = 0
     retrieved_doc_ids_in_gold_total = 0
+    missing_final_fields = 0
     
     count = 0
     for res in results:
@@ -293,7 +403,14 @@ def evaluate(
             gold_set, missing_titles, ambiguous_titles = get_gold_doc_ids(gold_item)
             missing_titles_total += len(missing_titles)
             ambiguous_titles_total += len(ambiguous_titles)
-            retrieved_set = get_retrieved_doc_ids(res, sources=doc_id_sources)
+
+            if scope == 'final':
+                if (res.get('final_retrieved_passages') is None) and (res.get('final_retrieved_paths') is None):
+                    missing_final_fields += 1
+                retrieved_set = get_final_retrieved_doc_ids_at_k(res, k=at_k, sources=doc_id_sources)
+            else:
+                retrieved_set = get_retrieved_doc_ids(res, sources=doc_id_sources)
+
             retrieved_doc_ids_total += len(retrieved_set)
             if gold_doc_id_universe:
                 retrieved_doc_ids_in_gold_total += len(retrieved_set.intersection(gold_doc_id_universe))
@@ -312,29 +429,42 @@ def evaluate(
         
         count += 1
         
-    print(f"\nEvaluation Results ({count} questions, key={key}):")
-    print(f"Avg Recall:    {np.mean(metrics['recall']):.4f}")
-    print(f"Avg Precision: {np.mean(metrics['precision']):.4f}")
-    print(f"Avg F1:        {np.mean(metrics['f1']):.4f}")
-    print(f"Hit Rate (All):{np.mean(metrics['hit_rate']):.4f}")
+    scope_label = f"{scope}@{at_k}" if (key == 'doc_id' and scope == 'final') else scope
+    print(f"\nEvaluation Results ({count} questions, key={key}, scope={scope_label}):")
+    metric_suffix = f"@{at_k}" if (key == 'doc_id' and scope == 'final') else ""
+    print(f"Avg Recall{metric_suffix}:    {np.mean(metrics['recall']):.4f}")
+    print(f"Avg Precision{metric_suffix}: {np.mean(metrics['precision']):.4f}")
+    print(f"Avg F1{metric_suffix}:        {np.mean(metrics['f1']):.4f}")
+    print(f"Hit Rate (All){metric_suffix}: {np.mean(metrics['hit_rate']):.4f}")
 
     if key == 'doc_id':
         print("\n[DocID mapping diagnostics]")
         print(f"Total missing supporting_facts titles in context: {missing_titles_total}")
         print(f"Total ambiguous supporting_facts titles in context: {ambiguous_titles_total}")
+        if scope == 'final':
+            print(f"Results missing final_retrieved_* fields: {missing_final_fields}")
+            if len(results) > 0 and missing_final_fields == len(results):
+                print("\n[WARNING] All results are missing `final_retrieved_passages`/`final_retrieved_paths`.")
+                print("This means scope=final@k is using the fallback reconstruction from `decomposition.subquestions[].retrieved_paths`.")
+                print("If you intended *true* final@k (final answer uses exactly these k passages), re-run evaluation with a newer result file")
+                print("that contains `final_retrieved_passages` and/or `final_retrieved_paths`.")
+                print("Example:")
+                print("  python evaluate_retrieval.py --result_path Results/<new_results_with_final_fields>.json --gold_path <gold>.json --scope final --at_k 5")
         if retrieved_doc_ids_total > 0 and gold_doc_id_universe:
             coverage = retrieved_doc_ids_in_gold_total / retrieved_doc_ids_total
             print(f"Retrieved doc_ids that exist in gold context universe: {coverage:.4f}")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('--result_path', type=str, default ='Results/test_musique_v11_200_results_v3.json', help='Path to result JSON file')
+    parser.add_argument('--result_path', type=str, default ='Results/test_musique_v12_ragcot_results_v4aligned_v1.json', help='Path to result JSON file')
     parser.add_argument('--gold_path', type=str, default='MuSiQue/musique_sample_200.json', help='Path to gold dataset')
     # parser.add_argument('--gold_path', type=str, default='HotpotQA/hotpotqa_sample_200.json', help='Path to gold dataset')
     parser.add_argument('--key', type=str, default='doc_id', choices=['doc_id', 'title'], help='Evaluation key')
     parser.add_argument('--check_mapping', action='store_true', help='Print title/doc_id mapping diagnostics')
     parser.add_argument('--resolve_titles_from_doc_id', action='store_true', help='When --key title, resolve titles using doc_id->title mapping from gold dataset')
     parser.add_argument('--doc_id_sources', type=str, default='passages', choices=['passages', 'paths', 'both'], help='When --key doc_id, which result fields to count')
+    parser.add_argument('--scope', type=str, default='final', choices=['final', 'all'], help='Evaluate only final@k retrieval or union over all sub-questions')
+    parser.add_argument('--at_k', type=int, default=5, help='k for final@k evaluation (only when --scope final and --key doc_id)')
     args = parser.parse_args()
 
     evaluate(
@@ -344,4 +474,6 @@ if __name__ == "__main__":
         check_mapping=args.check_mapping,
         resolve_titles_from_doc_id=bool(args.resolve_titles_from_doc_id),
         doc_id_sources=str(args.doc_id_sources),
+        scope=str(args.scope),
+        at_k=int(args.at_k),
     )
