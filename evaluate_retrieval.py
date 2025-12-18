@@ -1,7 +1,7 @@
 import json
 import argparse
 import numpy as np
-from typing import Set, List, Dict
+from typing import Set, List, Dict, Tuple
 
 def load_json(path):
     with open(path, 'r', encoding='utf-8') as f:
@@ -13,6 +13,41 @@ def load_json(path):
 def get_gold_titles(item) -> Set[str]:
     """Extract unique titles from supporting_facts."""
     return set(fact[0] for fact in item.get('supporting_facts', []))
+
+
+def _build_title_to_doc_ids(item: Dict) -> Dict[str, List[str]]:
+    mapping: Dict[str, List[str]] = {}
+    sample_id = item.get('_id')
+    if not sample_id:
+        return mapping
+    for ctx_idx, (title, _sentences) in enumerate(item.get('context', [])):
+        doc_id = f"{sample_id}::ctx{ctx_idx}"
+        mapping.setdefault(title, []).append(doc_id)
+    return mapping
+
+
+def get_gold_doc_ids(item: Dict) -> Tuple[Set[str], Set[str], Set[str]]:
+    """Return (gold_doc_ids, missing_titles, ambiguous_titles).
+
+    supporting_facts provides titles; we map them to doc_ids via the item's context.
+    - missing_titles: titles in supporting_facts that are not present in context
+    - ambiguous_titles: titles that map to multiple ctx entries for this item
+    """
+    title_to_doc_ids = _build_title_to_doc_ids(item)
+    gold_doc_ids: Set[str] = set()
+    missing_titles: Set[str] = set()
+    ambiguous_titles: Set[str] = set()
+
+    for title, _sent_idx in item.get('supporting_facts', []):
+        doc_ids = title_to_doc_ids.get(title)
+        if not doc_ids:
+            missing_titles.add(title)
+            continue
+        if len(doc_ids) > 1:
+            ambiguous_titles.add(title)
+        gold_doc_ids.update(doc_ids)
+
+    return gold_doc_ids, missing_titles, ambiguous_titles
 
 def get_retrieved_titles(result_item) -> Set[str]:
     """Extract unique titles from retrieved passages in the result."""
@@ -52,7 +87,138 @@ def get_retrieved_titles(result_item) -> Set[str]:
                     
     return titles
 
-def evaluate(result_path, gold_path):
+
+def get_retrieved_titles_resolved_from_doc_id(result_item: Dict, doc_id_to_title: Dict[str, str]) -> Set[str]:
+    """Extract unique titles, preferring doc_id→title resolution when doc_id is present."""
+    titles: Set[str] = set()
+
+    def _add_title_from_passage(p: Dict):
+        doc_id = p.get('doc_id')
+        if doc_id is not None:
+            resolved = doc_id_to_title.get(str(doc_id))
+            if resolved:
+                titles.add(resolved)
+                return
+        t = p.get('title', '')
+        if isinstance(t, str) and t:
+            titles.add(t)
+
+    # 1) Top-level retrieved_passages
+    for p in result_item.get('retrieved_passages', []) or []:
+        if isinstance(p, dict):
+            _add_title_from_passage(p)
+        elif isinstance(p, str):
+            titles.add(p)
+
+    # 1.1) retrieved_docs (simple list of titles)
+    for t in result_item.get('retrieved_docs', []) or []:
+        if isinstance(t, str) and t:
+            titles.add(t)
+
+    # 2) Decomposition subquestions
+    decomposition = result_item.get('decomposition')
+    subquestions = []
+    if isinstance(decomposition, list):
+        subquestions = decomposition
+    elif isinstance(decomposition, dict):
+        subquestions = decomposition.get('subquestions', []) or []
+
+    for sq in subquestions:
+        for p in sq.get('retrieved_passages', []) or []:
+            if isinstance(p, dict):
+                _add_title_from_passage(p)
+            elif isinstance(p, str):
+                titles.add(p)
+
+    return titles
+
+
+def get_retrieved_doc_ids(result_item: Dict, sources: str = 'both') -> Set[str]:
+    """Extract unique doc_ids from retrieved passages/paths in the result.
+
+    sources: 'passages' | 'paths' | 'both'
+    """
+    doc_ids: Set[str] = set()
+
+    def _add_doc_id(value):
+        if not value:
+            return
+        if isinstance(value, str):
+            doc_ids.add(value)
+        elif isinstance(value, (int, float)):
+            doc_ids.add(str(value))
+
+    if sources in ('passages', 'both'):
+        # 1) Top-level retrieved_passages
+        for p in result_item.get('retrieved_passages', []) or []:
+            if isinstance(p, dict):
+                if 'doc_id' in p:
+                    _add_doc_id(p.get('doc_id'))
+                if 'doc_ids' in p and isinstance(p.get('doc_ids'), list):
+                    for d in p.get('doc_ids'):
+                        _add_doc_id(d)
+
+    # 2) Decomposition subquestions
+    decomposition = result_item.get('decomposition')
+    subquestions = []
+    if isinstance(decomposition, list):
+        subquestions = decomposition
+    elif isinstance(decomposition, dict):
+        subquestions = decomposition.get('subquestions', []) or []
+
+    for sq in subquestions:
+        if sources in ('passages', 'both'):
+            for p in sq.get('retrieved_passages', []) or []:
+                if isinstance(p, dict):
+                    if 'doc_id' in p:
+                        _add_doc_id(p.get('doc_id'))
+                    if 'doc_ids' in p and isinstance(p.get('doc_ids'), list):
+                        for d in p.get('doc_ids'):
+                            _add_doc_id(d)
+        if sources in ('paths', 'both'):
+            for rp in sq.get('retrieved_paths', []) or []:
+                if isinstance(rp, dict) and 'doc_id' in rp:
+                    _add_doc_id(rp.get('doc_id'))
+
+    if sources in ('paths', 'both'):
+        # 3) Some pipelines store paths at top level
+        for rp in result_item.get('retrieved_paths', []) or []:
+            if isinstance(rp, dict) and 'doc_id' in rp:
+                _add_doc_id(rp.get('doc_id'))
+
+    return doc_ids
+
+
+def _analyze_title_uniqueness(gold_data: List[Dict]) -> Dict[str, int]:
+    """Quick diagnostics to surface title ambiguity issues (esp. MuSiQue vs HotpotQA)."""
+    per_item_ambiguous = 0
+    total_items = 0
+
+    global_title_counts: Dict[str, int] = {}
+    for item in gold_data:
+        total_items += 1
+        title_to_doc_ids = _build_title_to_doc_ids(item)
+        if any(len(v) > 1 for v in title_to_doc_ids.values()):
+            per_item_ambiguous += 1
+        for title in title_to_doc_ids.keys():
+            global_title_counts[title] = global_title_counts.get(title, 0) + 1
+
+    global_duplicate_titles = sum(1 for _t, c in global_title_counts.items() if c > 1)
+    return {
+        "items": total_items,
+        "items_with_ambiguous_title_in_context": per_item_ambiguous,
+        "global_unique_titles": len(global_title_counts),
+        "global_duplicate_titles": global_duplicate_titles,
+    }
+
+def evaluate(
+    result_path,
+    gold_path,
+    key: str = 'doc_id',
+    check_mapping: bool = False,
+    resolve_titles_from_doc_id: bool = False,
+    doc_id_sources: str = 'both',
+):
     results = load_json(result_path)
     gold_data = load_json(gold_path)
     
@@ -69,6 +235,38 @@ def evaluate(result_path, gold_path):
     }
     
     print(f"Evaluating {len(results)} results...")
+
+    if check_mapping:
+        stats = _analyze_title_uniqueness(gold_data)
+        print("\n[Gold title/context diagnostics]")
+        print(f"Items: {stats['items']}")
+        print(f"Items with ambiguous title in context: {stats['items_with_ambiguous_title_in_context']}")
+        print(f"Global unique titles: {stats['global_unique_titles']}")
+        print(f"Global duplicate titles (across items): {stats['global_duplicate_titles']}")
+
+    gold_doc_id_universe: Set[str] = set()
+    doc_id_to_title: Dict[str, str] = {}
+    if key == 'doc_id':
+        for item in gold_data:
+            sample_id = item.get('_id')
+            if not sample_id:
+                continue
+            for ctx_idx, _ctx in enumerate(item.get('context', [])):
+                gold_doc_id_universe.add(f"{sample_id}::ctx{ctx_idx}")
+
+    # Useful for resolving titles from doc_id when comparing legacy result files.
+    for item in gold_data:
+        sample_id = item.get('_id')
+        if not sample_id:
+            continue
+        for ctx_idx, (title, _ctx) in enumerate(item.get('context', [])):
+            doc_id_to_title[f"{sample_id}::ctx{ctx_idx}"] = title
+
+    missing_gold_items = 0
+    missing_titles_total = 0
+    ambiguous_titles_total = 0
+    retrieved_doc_ids_total = 0
+    retrieved_doc_ids_in_gold_total = 0
     
     count = 0
     for res in results:
@@ -85,14 +283,26 @@ def evaluate(result_path, gold_path):
             # print(f"Warning: Gold item not found for question: {question[:50]}...")
             continue
             
-        gold_titles = get_gold_titles(gold_item)
-        retrieved_titles = get_retrieved_titles(res)
-        
+        if key == 'title':
+            gold_set = get_gold_titles(gold_item)
+            if resolve_titles_from_doc_id:
+                retrieved_set = get_retrieved_titles_resolved_from_doc_id(res, doc_id_to_title)
+            else:
+                retrieved_set = get_retrieved_titles(res)
+        else:
+            gold_set, missing_titles, ambiguous_titles = get_gold_doc_ids(gold_item)
+            missing_titles_total += len(missing_titles)
+            ambiguous_titles_total += len(ambiguous_titles)
+            retrieved_set = get_retrieved_doc_ids(res, sources=doc_id_sources)
+            retrieved_doc_ids_total += len(retrieved_set)
+            if gold_doc_id_universe:
+                retrieved_doc_ids_in_gold_total += len(retrieved_set.intersection(gold_doc_id_universe))
+
         # Calculate metrics
-        intersection = gold_titles.intersection(retrieved_titles)
-        
-        recall = len(intersection) / len(gold_titles) if gold_titles else 0
-        precision = len(intersection) / len(retrieved_titles) if retrieved_titles else 0
+        intersection = gold_set.intersection(retrieved_set)
+
+        recall = len(intersection) / len(gold_set) if gold_set else 0
+        precision = len(intersection) / len(retrieved_set) if retrieved_set else 0
         f1 = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0
         
         metrics['recall'].append(recall)
@@ -102,17 +312,36 @@ def evaluate(result_path, gold_path):
         
         count += 1
         
-    print(f"\nEvaluation Results ({count} questions):")
+    print(f"\nEvaluation Results ({count} questions, key={key}):")
     print(f"Avg Recall:    {np.mean(metrics['recall']):.4f}")
     print(f"Avg Precision: {np.mean(metrics['precision']):.4f}")
     print(f"Avg F1:        {np.mean(metrics['f1']):.4f}")
     print(f"Hit Rate (All):{np.mean(metrics['hit_rate']):.4f}")
 
+    if key == 'doc_id':
+        print("\n[DocID mapping diagnostics]")
+        print(f"Total missing supporting_facts titles in context: {missing_titles_total}")
+        print(f"Total ambiguous supporting_facts titles in context: {ambiguous_titles_total}")
+        if retrieved_doc_ids_total > 0 and gold_doc_id_universe:
+            coverage = retrieved_doc_ids_in_gold_total / retrieved_doc_ids_total
+            print(f"Retrieved doc_ids that exist in gold context universe: {coverage:.4f}")
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('--result_path', type=str, default ='Results/test_hotpot_v11_200_results.json', help='Path to result JSON file')
-    # parser.add_argument('--gold_path', type=str, default='MuSiQue/musique_sample_200.json', help='Path to gold dataset')
-    parser.add_argument('--gold_path', type=str, default='HotpotQA/hotpotqa_sample_200.json', help='Path to gold dataset')
+    parser.add_argument('--result_path', type=str, default ='Results/test_musique_v11_200_results_v3.json', help='Path to result JSON file')
+    parser.add_argument('--gold_path', type=str, default='MuSiQue/musique_sample_200.json', help='Path to gold dataset')
+    # parser.add_argument('--gold_path', type=str, default='HotpotQA/hotpotqa_sample_200.json', help='Path to gold dataset')
+    parser.add_argument('--key', type=str, default='doc_id', choices=['doc_id', 'title'], help='Evaluation key')
+    parser.add_argument('--check_mapping', action='store_true', help='Print title/doc_id mapping diagnostics')
+    parser.add_argument('--resolve_titles_from_doc_id', action='store_true', help='When --key title, resolve titles using doc_id->title mapping from gold dataset')
+    parser.add_argument('--doc_id_sources', type=str, default='passages', choices=['passages', 'paths', 'both'], help='When --key doc_id, which result fields to count')
     args = parser.parse_args()
-    
-    evaluate(args.result_path, args.gold_path)
+
+    evaluate(
+        args.result_path,
+        args.gold_path,
+        key=args.key,
+        check_mapping=args.check_mapping,
+        resolve_titles_from_doc_id=bool(args.resolve_titles_from_doc_id),
+        doc_id_sources=str(args.doc_id_sources),
+    )

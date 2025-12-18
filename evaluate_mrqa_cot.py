@@ -270,7 +270,7 @@ def main():
         'file',
         type=str,
         nargs='?',
-        default='Results/test_musique_v11_ragprompt_results.json',
+        default='Results//test_hotpot_v12_ragcot_results_v4aligned.json',
         help='Path to result JSON file',
     )
     parser.add_argument('-v', '--verbose', action='store_true', help='Print per-example results')

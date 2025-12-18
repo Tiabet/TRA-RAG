@@ -3,7 +3,7 @@
 Debug: rag_qa_cot one-shot prompt wiring (single MuSiQue question)
 =================================================================
 
-Runs ONE question through `MuSiQueMultihopPipelineV11PathsHint` and logs the *actual*
+Runs ONE question through `NewMultihopPipelineV11PathsHintCoT` and logs the *actual*
 chat messages sent to the LLM (including one-shot examples) for:
 - sub-question answering calls
 - final main-query answering call
@@ -26,7 +26,7 @@ from openai import AsyncOpenAI
 
 from hybrid_path_retriever import HybridPathRetriever
 from llm_logger import init_logger, finalize_log
-from new_multihop_pipeline_musique_paths_hint import MuSiQueMultihopPipelineV11PathsHint
+from new_multihop_pipeline_paths_hint_cot import NewMultihopPipelineV11PathsHintCoT
 
 
 def parse_args():
@@ -49,17 +49,18 @@ async def main():
     retriever = HybridPathRetriever(
         bm25_weight=0.4,
         dense_weight=0.6,
-        bm25_index_path='MuSiQue/bm25_index',
-        embeddings_path='MuSiQue/path_embeddings.npz',
+        bm25_index_path='MuSiQue/bm25_index_v4aligned',
+        embeddings_path='MuSiQue/path_embeddings_v4aligned.npz',
     )
 
-    pipeline = MuSiQueMultihopPipelineV11PathsHint(
+    pipeline = NewMultihopPipelineV11PathsHintCoT(
         client=client,
         retriever=retriever,
-        musique_path='MuSiQue/musique_sample_200.json',
-        db_path='MuSiQue/metadata_v3.db',
+        data_path='MuSiQue/musique_sample_200.json',
+        db_path='MuSiQue/metadata_v4aligned.db',
         verbose=True,
         log_messages=True,
+        dataset_name='musique',
     )
 
     with open('MuSiQue/musique_sample_200.json', 'r', encoding='utf-8') as f:
