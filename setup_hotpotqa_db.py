@@ -72,7 +72,16 @@ def convert_metadata_to_db(
             if dedup_by_title and entity_title in processed_titles:
                 continue
 
-            doc_id = f"{qid}::ctx{ci}"
+            # Prefer stable doc_id produced from the ORIGINAL dataset context index.
+            # build_metadata.py now writes doc_id/ctx_idx explicitly to keep ordering stable
+            # even under async execution.
+            doc_id = ctx_meta.get('doc_id')
+            if not doc_id:
+                ctx_idx = ctx_meta.get('ctx_idx')
+                if ctx_idx is not None:
+                    doc_id = f"{qid}::ctx{int(ctx_idx)}"
+                else:
+                    doc_id = f"{qid}::ctx{ci}"
                 
             try:
                 cursor.execute(
@@ -107,6 +116,6 @@ def convert_metadata_to_db(
 
 if __name__ == "__main__":
     convert_metadata_to_db(
-        metadata_json_path='HotpotQA/hotpotqa_sample_200_metadata.json',
-        db_path='HotpotQA/metadata_v3.db'
+        metadata_json_path='HotpotQA/hotpotqa_sample_200_metadata_v4aligned.json',
+        db_path='HotpotQA/metadata_v4aligned.db'
     )

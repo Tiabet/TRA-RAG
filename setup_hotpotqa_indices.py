@@ -5,12 +5,12 @@ HotpotQA Index Generation Pipeline
 End-to-end pipeline for HotpotQA:
 1) (Optional) create a sample file from HotpotQA/hotpotqa.json
 2) Build LLM metadata JSON (context_metadata)
-3) Convert metadata JSON -> SQLite DB (metadata_v3.db)
+3) Convert metadata JSON -> SQLite DB (metadata_v4aligned.db)
 4) Generate embedding_texts.json from DB
 5) Generate dense path embeddings (path_embeddings.npz)
 6) Build BM25 index from stopword-filtered embedding entry text
 
-Defaults match existing retrievers/pipelines in this repo.
+Defaults match the doc_id-aligned (v4aligned) artifacts.
 """
 
 import argparse
@@ -30,11 +30,11 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Build HotpotQA metadata + indices")
 
     parser.add_argument("--data", type=str, default="HotpotQA/hotpotqa_sample_200.json", help="Input QA JSON")
-    parser.add_argument("--metadata_json", type=str, default="HotpotQA/hotpotqa_sample_200_metadata.json", help="Output metadata JSON")
-    parser.add_argument("--db", type=str, default="HotpotQA/metadata_v3.db", help="Output SQLite DB")
-    parser.add_argument("--embedding_texts", type=str, default="HotpotQA/embedding_texts.json", help="Output embedding texts")
-    parser.add_argument("--embeddings", type=str, default="HotpotQA/path_embeddings.npz", help="Output dense embeddings")
-    parser.add_argument("--bm25_index", type=str, default="HotpotQA/bm25_index", help="Output BM25 index dir")
+    parser.add_argument("--metadata_json", type=str, default="HotpotQA/hotpotqa_sample_200_metadata_v4aligned.json", help="Output metadata JSON")
+    parser.add_argument("--db", type=str, default="HotpotQA/metadata_v4aligned.db", help="Output SQLite DB")
+    parser.add_argument("--embedding_texts", type=str, default="HotpotQA/embedding_texts_v4aligned.json", help="Output embedding texts")
+    parser.add_argument("--embeddings", type=str, default="HotpotQA/path_embeddings_v4aligned.npz", help="Output dense embeddings")
+    parser.add_argument("--bm25_index", type=str, default="HotpotQA/bm25_index_v4aligned", help="Output BM25 index dir")
 
     # Metadata build controls
     parser.add_argument("--model", type=str, default="openai/gpt-4o-mini", help="LLM model for metadata")

@@ -72,8 +72,8 @@ def parse_args():
     parser.add_argument(
         "--concurrency",
         type=int,
-        default=50,
-        help="동시 처리 개수 (기본값: 50)"
+        default=200,
+        help="동시 처리 개수 (기본값: 200)"
     )
     
     return parser.parse_args()
@@ -223,14 +223,22 @@ async def process_dataset(
     failed_passages = 0
     
     # 전체 passage 수 계산 및 작업 목록 생성
+    # IMPORTANT: ctx_idx must be preserved so that downstream doc_id mapping stays stable.
     tasks = []
+    item_context_titles: Dict[str, List[str]] = {}
     for item in data:
-        for passage in item.get("context", []):
+        item_id = item.get("_id") or item.get("id")
+        context = item.get("context", []) or []
+        if item_id and item_id not in item_context_titles:
+            item_context_titles[item_id] = [str(p[0]) for p in context if isinstance(p, list) and p]
+        for ctx_idx, passage in enumerate(context):
             if max_passages and len(tasks) >= max_passages:
                 break
             tasks.append({
                 "item": item,
-                "passage": passage
+                "passage": passage,
+                "ctx_idx": ctx_idx,
+                "context_len": len(context),
             })
         if max_passages and len(tasks) >= max_passages:
             break
@@ -267,6 +275,24 @@ async def process_dataset(
     
     # 항목별로 결과 정리를 위한 딕셔너리
     item_results = {}
+
+    def _materialize_context_metadata(item_id: str) -> List[Dict[str, Any]]:
+        entry = item_results[item_id]
+        ctx_list = entry.get("context_metadata", [])
+        titles = item_context_titles.get(item_id, [])
+        out: List[Dict[str, Any]] = []
+        for i, v in enumerate(ctx_list):
+            if v is not None:
+                out.append(v)
+                continue
+            title = titles[i] if i < len(titles) else ""
+            out.append({
+                "title": title,
+                "error": "metadata missing (not processed)",
+                "ctx_idx": i,
+                "doc_id": f"{item_id}::ctx{i}",
+            })
+        return out
     
     # 배치 처리 (한번에 너무 많은 작업을 생성하지 않도록)
     batch_process_size = concurrency * 10  # 동시성의 10배씩 처리
@@ -282,6 +308,8 @@ async def process_dataset(
             
             item = task_info["item"]
             item_id = item.get("_id") or item.get("id")
+            ctx_idx = int(task_info.get("ctx_idx", 0))
+            context_len = int(task_info.get("context_len", 0))
             
             # 항목별 결과 초기화
             if item_id not in item_results:
@@ -289,21 +317,27 @@ async def process_dataset(
                     "id": item_id,
                     "question": item.get("question"),
                     "answer": item.get("answer"),
-                    "context_metadata": []
+                    # Keep list indexed by ctx_idx to preserve stable ordering.
+                    "context_metadata": [None] * context_len,
                 }
             
             # 메타데이터 추가
             if result["success"]:
-                item_results[item_id]["context_metadata"].append({
+                item_results[item_id]["context_metadata"][ctx_idx] = {
                     "title": result["title"],
-                    "metadata": result["metadata"]
-                })
+                    "metadata": result["metadata"],
+                    "ctx_idx": ctx_idx,
+                    "doc_id": f"{item_id}::ctx{ctx_idx}",
+                }
             else:
-                item_results[item_id]["context_metadata"].append({
+                item_results[item_id]["context_metadata"][ctx_idx] = {
                     "title": result["title"],
                     "error": result["error"],
                     "raw_response": result.get("raw_response")
-                })
+                    ,
+                    "ctx_idx": ctx_idx,
+                    "doc_id": f"{item_id}::ctx{ctx_idx}",
+                }
                 failed_passages += 1
             
             processed_passages += 1
@@ -311,15 +345,23 @@ async def process_dataset(
             
             # 중간 저장
             if output_path and processed_passages % batch_size == 0:
-                current_results = list(item_results.values())
+                current_results = []
+                for iid, ent in item_results.items():
+                    ent_copy = dict(ent)
+                    ent_copy["context_metadata"] = _materialize_context_metadata(iid)
+                    current_results.append(ent_copy)
                 with open(output_path, "w", encoding="utf-8") as f:
                     json.dump(current_results, f, indent=2, ensure_ascii=False)
                 pbar.set_postfix({"저장": f"{len(current_results)}개 항목"})
     
     pbar.close()
     
-    # 최종 결과 리스트로 변환
-    results = list(item_results.values())
+    # 최종 결과 리스트로 변환 (materialize None slots)
+    results = []
+    for iid, ent in item_results.items():
+        ent_copy = dict(ent)
+        ent_copy["context_metadata"] = _materialize_context_metadata(iid)
+        results.append(ent_copy)
     
     # 통계 출력
     print(f"\n{'='*60}")
