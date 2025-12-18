@@ -1,14 +1,20 @@
 #!/usr/bin/env python3
 """\
-New Multi-hop Pipeline v11 (Paths-as-Hints)
-==========================================
-Extends v3 (original-passages answering) with an additional signal:
+Multi-hop Pipeline (Paths-as-Hints + rag_qa_cot one-shot)
+=======================================================
 
-- Retrieval: RRF hybrid (BM25+dense) over metadata paths.
-- For each sub-question:
-  - Select top-N paths (default: 10) as *strong hints*
-  - Select top-K unique original passages (default: 3) using source_title
-  - Answer using BOTH: passages(3) + paths(10)
+Based on `new_multihop_pipeline_paths_hint.py` (v11 paths-as-hints), but:
+- Supports BOTH MuSiQue and HotpotQA dataset files.
+- Applies `Prompt/rag_qa_cot.py` one-shot chat prompt template to BOTH:
+    - sub-question answering
+    - final main-query answering
+
+Notes:
+- Sub-question answering keeps dependency context (previous Q/A) and can include
+    path hints, but is formatted as rag_qa_cot docs + Question + Thought:.
+- Final answering prompt uses rag_qa_cot docs + Question + Thought: and:
+    - does NOT include previous context
+    - includes explicit instruction to use Metadata Paths (Hints)
 
 Output remains compatible with:
 - evaluate_retrieval.py (reads retrieved_passages titles)
@@ -19,62 +25,89 @@ All LLM calls are logged via llm_logger.
 """
 
 import asyncio
+import copy
 import json
-import time
+import os
 import sqlite3
+import time
 from typing import Dict, List, Optional, Tuple
 
 from openai import AsyncOpenAI
 
 from query_decomposition import (
-    decompose_query,
     QueryDecomposition,
     SubQuestion,
-    substitute_answers,
+    decompose_query,
     get_execution_order,
+    substitute_answers,
 )
 from hybrid_path_retriever import HybridPathRetriever
 
-from Prompt.answer import (
-    DETAILED_SUBQUESTION_ANSWERING_PROMPT,
-    FINAL_SUBQUESTION_ANSWERING_PROMPT,
-)
-from Prompt.subquestion_answering_prompt import FINAL_ANSWER_SYNTHESIS_PROMPT
+from Prompt.rag_qa_cot import fact_rag_qa_system, prompt_template_fact as RAG_QA_COT_PROMPT_TEMPLATE
 
 from llm_logger import log_llm_call
 
 
-class NewMultihopPipelineV11PathsHint:
-    """Pipeline using hybrid retrieval + original passages + top path hints for SQ answering."""
+COT_MAX_TOKENS = int(os.getenv("COT_MAX_TOKENS", "2048"))
+
+
+def _extract_after_answer_marker(text: str) -> str:
+    """Extract only the portion after the last 'Answer:' marker.
+
+    This keeps CoT reasoning available in logs while storing a clean answer string
+    for dependency substitution and evaluation.
+    """
+    if not text:
+        return ""
+    lower = text.lower()
+    idx = lower.rfind("answer")
+    if idx == -1:
+        return text.strip()
+    # Find the last occurrence of 'answer' followed by optional spaces and ':'
+    # Do a simple scan from the end to be resilient to formatting.
+    marker = "answer:"
+    marker_idx = lower.rfind(marker)
+    if marker_idx == -1:
+        return text.strip()
+    return text[marker_idx + len(marker):].strip()
+
+
+class NewMultihopPipelineV11PathsHintCoT:
+    """Pipeline using hybrid retrieval + original passages + top path hints (MuSiQue/HotpotQA) + rag_qa_cot one-shot."""
 
     def __init__(
         self,
         client: AsyncOpenAI,
         retriever: HybridPathRetriever,
-        hotpotqa_path: str = 'HotpotQA/hotpotqa_sample_200.json',
-        db_path: str = 'HotpotQA/metadata_v4aligned.db',
+        data_path: str = 'MuSiQue/musique_sample_200.json',
+        db_path: str = 'MuSiQue/metadata_v4aligned.db',
         top_k_passages: int = 5,
         top_k_paths: int = 30,
         path_fetch_k: int = 50,
         verbose: bool = True,
+        log_messages: bool = False,
+        dataset_name: str = 'musique',
     ):
         self.client = client
         self.retriever = retriever
         self.db_path = db_path
         self.top_k_passages = top_k_passages
         self.top_k_paths = top_k_paths
-        self.path_fetch_k = max(path_fetch_k, top_k_paths, top_k_passages)
+        # For top-30 UNIQUE paths, we often need to fetch much more than 30 due to duplicates.
+        self.path_fetch_k = max(path_fetch_k, top_k_paths * 10, top_k_passages * 10, 100)
         self.verbose = verbose
+        self.log_messages = log_messages
+        self.dataset_name = dataset_name
 
-        self.original_passages, self.doc_id_passages = self._load_passage_indices(hotpotqa_path)
+        self.original_passages, self.doc_id_passages = self._load_passage_indices(data_path)
         if self.verbose:
             print(f"[OK] Loaded {len(self.original_passages)} original passages")
 
         self.conn = sqlite3.connect(db_path)
         self.conn.row_factory = sqlite3.Row
 
-    def _load_passage_indices(self, hotpotqa_path: str) -> Tuple[Dict[str, str], Dict[str, Dict[str, str]]]:
-        with open(hotpotqa_path, 'r', encoding='utf-8') as f:
+    def _load_passage_indices(self, data_path: str) -> Tuple[Dict[str, str], Dict[str, Dict[str, str]]]:
+        with open(data_path, 'r', encoding='utf-8') as f:
             data = json.load(f)
 
         passages_by_title: Dict[str, str] = {}
@@ -87,6 +120,7 @@ class NewMultihopPipelineV11PathsHint:
                     passages_by_title[title] = full_text
                 if sample_id:
                     doc_id = f"{sample_id}::ctx{ctx_idx}"
+                    # Store title too, so downstream can display it without relying on path['source_title'].
                     passages_by_doc_id[str(doc_id)] = {"title": title, "text": full_text}
 
         return passages_by_title, passages_by_doc_id
@@ -142,40 +176,21 @@ class NewMultihopPipelineV11PathsHint:
         """Return (top_unique_passages, top_unique_paths_as_hints).
 
         Notes:
-        - Passages are derived from the highest-scoring paths (doc_id) and deduplicated by doc_id.
+        - Passages are derived from the highest-scoring UNIQUE paths (doc_id) and deduplicated by doc_id.
         - Paths are deduplicated by (source_title, entity_title, key_path, value).
         """
-
-        return await self.retrieve_for_query_with_limits(
-            query=query,
-            top_k_passages=self.top_k_passages,
-            top_k_paths=self.top_k_paths,
-            path_fetch_k=self.path_fetch_k,
-        )
-
-    async def retrieve_for_query_with_limits(
-        self,
-        query: str,
-        top_k_passages: int,
-        top_k_paths: int,
-        path_fetch_k: int,
-    ) -> Tuple[List[Dict], List[Dict]]:
-        """Retrieve using explicit limits (used for final-answer override like top-30 paths)."""
-        # For top-30 UNIQUE paths, we often need to fetch much more than 30 due to duplicates.
-        fetch_k = max(path_fetch_k, top_k_paths * 10, top_k_passages * 10, 100)
-
         fetched_paths = await self.retriever.search_hybrid(
             query,
-            top_k=fetch_k,
-            bm25_candidates=max(50, fetch_k),
-            dense_candidates=max(50, fetch_k),
+            top_k=self.path_fetch_k,
+            bm25_candidates=max(50, self.path_fetch_k),
+            dense_candidates=max(50, self.path_fetch_k),
         )
 
         # 1) Pick top-k UNIQUE paths in ranked order
         seen_path_keys = set()
         top_paths: List[Dict] = []
         for p in fetched_paths:
-            if len(top_paths) >= top_k_paths:
+            if len(top_paths) >= self.top_k_paths:
                 break
             source_title = p.get('source_title') or p.get('title') or ''
             entity_title = p.get('entity_title') or p.get('title') or ''
@@ -190,12 +205,9 @@ class NewMultihopPipelineV11PathsHint:
         # 2) Pick top-k unique passages derived from the top-scoring UNIQUE paths (doc_id-based).
         seen_doc_ids = set()
         passages: List[Dict] = []
-
-        # Passages are selected from the top-scoring UNIQUE paths.
-        # This ties passage selection strictly to path scores.
         sorted_paths_for_passages = sorted(top_paths, key=self._safe_score, reverse=True)
         for path in sorted_paths_for_passages:
-            if len(passages) >= top_k_passages:
+            if len(passages) >= self.top_k_passages:
                 break
 
             doc_id = path.get('doc_id')
@@ -204,17 +216,17 @@ class NewMultihopPipelineV11PathsHint:
             doc_id_str = str(doc_id)
             if doc_id_str in seen_doc_ids:
                 continue
-            seen_doc_ids.add(doc_id_str)
 
-            entity_title = path.get('entity_title') or path.get('title')
-            source_title = path.get('source_title') or entity_title
-
-            # IMPORTANT: When pulling passages from paths, use doc_id mapping (not title matching).
             original_passage = self.get_original_passage_by_doc_id(doc_id_str)
             if not original_passage:
                 if self.verbose:
                     print(f"[WARN] No passage found for doc_id={doc_id_str} (during SQ passage selection)")
                 continue
+
+            seen_doc_ids.add(doc_id_str)
+
+            entity_title = path.get('entity_title') or path.get('title')
+            source_title = path.get('source_title') or entity_title
             title_from_doc = self.get_title_by_doc_id(doc_id_str)
             display_title = title_from_doc or str(source_title)
             metadata = self.get_full_metadata(str(entity_title), doc_id=doc_id_str)
@@ -235,6 +247,20 @@ class NewMultihopPipelineV11PathsHint:
 
         return passages, top_paths
 
+    async def retrieve_paths_for_query(self, query: str) -> List[Dict]:
+        """Return top-k paths-as-hints for a query.
+
+        Used for final answering (main query), where passages come from all sub-questions.
+        """
+        fetched_paths = await self.retriever.search_hybrid(
+            query,
+            top_k=self.path_fetch_k,
+            bm25_candidates=max(50, self.path_fetch_k),
+            dense_candidates=max(50, self.path_fetch_k),
+        )
+        # Keep behavior: return ranked paths, caller may choose to dedupe/trim.
+        return fetched_paths
+
     def _build_simple_previous_context(self, current_sq: SubQuestion, decomposition: QueryDecomposition) -> str:
         if not current_sq.depends_on:
             return ""
@@ -247,6 +273,18 @@ class NewMultihopPipelineV11PathsHint:
                 context_parts.append(f"Answer: {dep_sq.answer}")
                 context_parts.append("")
 
+        if context_parts:
+            return "Previous Sub-Questions:\n" + "\n".join(context_parts)
+        return ""
+
+    @staticmethod
+    def _build_all_subqa_context(decomposition: QueryDecomposition) -> str:
+        context_parts = []
+        for sq in decomposition.subquestions:
+            if getattr(sq, 'answer', None):
+                context_parts.append(f"{sq.id}: {sq.question}")
+                context_parts.append(f"Answer: {sq.answer}")
+                context_parts.append("")
         if context_parts:
             return "Previous Sub-Questions:\n" + "\n".join(context_parts)
         return ""
@@ -300,111 +338,6 @@ class NewMultihopPipelineV11PathsHint:
         except Exception:
             return float('-inf')
 
-    @staticmethod
-    def _format_paths_as_hints(paths: List[Dict]) -> str:
-        if not paths:
-            return "(No paths.)"
-
-        lines = []
-        for i, p in enumerate(paths, 1):
-            source_title = p.get('source_title') or p.get('title') or ''
-            entity_title = p.get('entity_title') or p.get('title') or ''
-            key_path = p.get('key_path', '')
-            value = p.get('value', '')
-            if isinstance(value, str) and len(value) > 220:
-                value = value[:220] + "..."
-            lines.append(
-                f"[{i}] source_title: {source_title} | entity_title: {entity_title}\n"
-                f"  {key_path}: {value}"
-            )
-        return "\n".join(lines)
-
-    @staticmethod
-    def _format_passages_original(passages: List[Dict]) -> str:
-        if not passages:
-            return "No passages retrieved."
-
-        passage_texts = []
-        for i, p in enumerate(passages, 1):
-            title = p.get('title', '')
-            original_text = p.get('original_passage', '')
-
-            if original_text:
-                passage_texts.append(f"[{i}] {title}\n{original_text}")
-            else:
-                # Fallback to metadata if original not available
-                if p.get('metadata'):
-                    metadata = p['metadata']
-                    parts = [f"[{i}] {title}"]
-                    excluded_keys = {'title'}
-                    for key, value in metadata.items():
-                        if key in excluded_keys or not value:
-                            continue
-                        value_str = str(value) if not isinstance(value, (dict, list)) else json.dumps(value, ensure_ascii=False)
-                        parts.append(f"  {key}: {value_str}")
-                    passage_texts.append("\n".join(parts))
-                else:
-                    passage_texts.append(f"[{i}] {title}\n(No content available)")
-
-        return "\n\n".join(passage_texts)
-
-    async def generate_answer(
-        self,
-        question: str,
-        passages: List[Dict],
-        top_paths: List[Dict],
-        previous_context: str,
-        main_query: str,
-        is_final_sq: bool = False,
-    ) -> str:
-        passages_text = self._format_passages_original(passages)
-        paths_text = self._format_paths_as_hints(top_paths)
-
-        combined_info = (
-            "---Top Retrieved Metadata Paths (STRONG HINTS)---\n"
-            "The paths below are strong hints for where the answer might be found. "
-            "Use them to focus your reading of the passages, but do NOT treat them as guaranteed truth.\n\n"
-            f"{paths_text}\n\n"
-            "---Top Passages from High-Score Paths (TOP-5 by doc_id)---\n"
-            f"{passages_text}"
-        )
-
-        prompt_template = FINAL_SUBQUESTION_ANSWERING_PROMPT if is_final_sq else DETAILED_SUBQUESTION_ANSWERING_PROMPT
-
-        prompt = prompt_template.replace("{{subquestion}}", question)
-        prompt = prompt.replace("{{passages}}", combined_info)
-        prompt = prompt.replace("{{previous_context}}", previous_context if previous_context else "None")
-        prompt = prompt.replace("{{main_query}}", main_query)
-
-        response = await self.client.chat.completions.create(
-            model="openai/gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": "You are a precise question answering system."},
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0.0,
-            max_tokens=150,
-        )
-
-        answer = response.choices[0].message.content.strip()
-
-        log_llm_call(
-            call_type="Subquestion Answering (V11-PathsHint)",
-            input_text=prompt,
-            output_text=answer,
-            context={
-                "question": question,
-                "main_query": main_query,
-                "is_final_sq": is_final_sq,
-                "num_passages": len(passages),
-                "num_paths": len(top_paths),
-            },
-        )
-
-        if answer.startswith("Answer:"):
-            answer = answer[7:].strip()
-        return answer
-
     def _select_top_paths_and_passages_from_decomposition(
         self,
         decomposition: QueryDecomposition,
@@ -442,70 +375,240 @@ class NewMultihopPipelineV11PathsHint:
 
         return top_paths, top_path_passages
 
+    @staticmethod
+    def _format_paths_as_hints(paths: List[Dict]) -> str:
+        if not paths:
+            return "(No paths.)"
+
+        lines = []
+        for i, p in enumerate(paths, 1):
+            source_title = p.get('source_title') or p.get('title') or ''
+            entity_title = p.get('entity_title') or p.get('title') or ''
+            key_path = p.get('key_path', '')
+            value = p.get('value', '')
+            if isinstance(value, str) and len(value) > 220:
+                value = value[:220] + "..."
+            lines.append(
+                f"[{i}] source_title: {source_title} | entity_title: {entity_title}\n"
+                f"  {key_path}: {value}"
+            )
+        return "\n".join(lines)
+
+    @staticmethod
+    def _format_passages_original(passages: List[Dict]) -> str:
+        if not passages:
+            return "No passages retrieved."
+
+        passage_texts = []
+        for i, p in enumerate(passages, 1):
+            title = p.get('title', '')
+            original_text = p.get('original_passage', '')
+
+            if original_text:
+                passage_texts.append(f"[{i}] {title}\n{original_text}")
+            else:
+                if p.get('metadata'):
+                    metadata = p['metadata']
+                    parts = [f"[{i}] {title}"]
+                    excluded_keys = {'title'}
+                    for key, value in metadata.items():
+                        if key in excluded_keys or not value:
+                            continue
+                        value_str = (
+                            str(value)
+                            if not isinstance(value, (dict, list))
+                            else json.dumps(value, ensure_ascii=False)
+                        )
+                        parts.append(f"  {key}: {value_str}")
+                    passage_texts.append("\n".join(parts))
+                else:
+                    passage_texts.append(f"[{i}] {title}\n(No content available)")
+
+        return "\n\n".join(passage_texts)
+
+    @staticmethod
+    def _build_prompt_user_rag_qa_template(
+        passages: List[Tuple[str, str]],
+        question: str,
+        *,
+        facts_text: str = "",
+        previous_context_text: str = "",
+    ) -> str:
+        """Build user content matching Prompt/rag_qa_cot.py one-shot format.
+
+        Important formatting rules:
+        - Only REAL passages are formatted with `Wikipedia Title:`.
+        - Facts/hints and previous context are shown as explicit sections (no Wikipedia Title).
+        """
+
+        parts: List[str] = []
+        # Make the instruction visible in FULL PROMPT.
+        parts.append("---Instruction---\n" + fact_rag_qa_system.strip())
+        if previous_context_text and previous_context_text.strip():
+            parts.append("---Previous Context---\n" + previous_context_text.strip())
+
+        # Passages first (user request), then facts.
+        docs = ""
+        for title, text in passages:
+            docs += f"Wikipedia Title: {title}\n{text}\n"
+        parts.append(docs.strip())
+
+        if facts_text and facts_text.strip():
+            parts.append("---Facts---\n" + facts_text.strip())
+
+        return "\n\n".join([p for p in parts if p.strip()]) + f"\n\nQuestion: {question}\nThought: "
+
+    async def generate_answer(
+        self,
+        question: str,
+        passages: List[Dict],
+        top_paths: List[Dict],
+        previous_context: str,
+        main_query: str,
+        is_final_sq: bool = False,
+    ) -> str:
+        # SQ answering: NO previous context (user request). Only passages + facts/hints.
+        docs: List[Tuple[str, str]] = []
+        for p in passages:
+            title = p.get('title') or ''
+            original = p.get('original_passage') or ''
+            docs.append((str(title), str(original)))
+
+        facts_text = ""
+        if top_paths:
+            facts_text = self._format_paths_as_hints(top_paths)
+
+        user_content = self._build_prompt_user_rag_qa_template(
+            docs,
+            question,
+            facts_text=facts_text,
+            previous_context_text="",
+        )
+
+        messages = self._build_rag_qa_cot_messages(user_content)
+        response = await self.client.chat.completions.create(
+            model="openai/gpt-4o-mini",
+            messages=messages,
+            temperature=0.0,
+            max_tokens=COT_MAX_TOKENS,
+        )
+
+        raw = response.choices[0].message.content.strip()
+        answer = _extract_after_answer_marker(raw)
+
+        context = {
+            "question": question,
+            "main_query": main_query,
+            "is_final_sq": is_final_sq,
+            "num_passages": len(passages),
+            "num_paths": len(top_paths),
+        }
+        # Always include enough template info to verify one-shot/system/assistant messages.
+        try:
+            context["system_message"] = messages[0].get("content", "")
+            context["one_shot_user"] = messages[1].get("content", "")
+            context["one_shot_assistant"] = messages[2].get("content", "")
+        except Exception:
+            pass
+        if self.log_messages:
+            context["chat_messages"] = self._messages_for_log(messages)
+
+        log_llm_call(
+            call_type=f"Subquestion Answering ({self.dataset_name}-V11-PathsHint + rag_qa_cot)",
+            input_text=user_content,
+            output_text=raw,
+            context=context,
+        )
+        return answer
+
+    def _build_rag_qa_cot_messages(self, prompt_user_text: str) -> List[Dict[str, str]]:
+        """Render chat messages from `Prompt/rag_qa_cot.py` prompt_template.
+
+        We send the full one-shot template in a single request, and only replace
+        the final user placeholder (${prompt_user}).
+        """
+        messages = copy.deepcopy(RAG_QA_COT_PROMPT_TEMPLATE)
+        rendered = False
+        for msg in messages:
+            if msg.get('role') == 'user' and msg.get('content') == '${prompt_user}':
+                msg['content'] = prompt_user_text
+                rendered = True
+                break
+        if not rendered:
+            messages.append({"role": "user", "content": prompt_user_text})
+        return messages
+
+    @staticmethod
+    def _messages_for_log(messages: List[Dict[str, str]]) -> str:
+        """Pretty JSON string for logging the exact chat payload."""
+        try:
+            return json.dumps(messages, ensure_ascii=False, indent=2)
+        except Exception:
+            return str(messages)
+
     async def generate_final_answer(
         self,
         main_query: str,
         decomposition: QueryDecomposition,
         all_passages: List[Dict],
     ) -> str:
-        chain_parts = []
-        for sq in decomposition.subquestions:
-            chain_parts.append(f"{sq.id}: {sq.question}")
-            chain_parts.append(f"Answer: {sq.answer if sq.answer else '(Not answered)'}")
-            chain_parts.append("")
-        subquestion_chain = '\n'.join(chain_parts)
-
         # IMPORTANT: Do NOT re-retrieve for final answering.
-        # Final answer uses:
-        # - top-30 paths by score (unique; reused from SQs)
-        # - top-5 passages derived from those paths by doc_id (NOT all SQ passages)
-        final_paths, top_path_passages = self._select_top_paths_and_passages_from_decomposition(
+        # Final answer uses top passages derived from SQ evidence only.
+        top_paths, top_path_passages = self._select_top_paths_and_passages_from_decomposition(
             decomposition,
             top_paths_k=30,
             top_passages_k=5,
         )
-        paths_text = self._format_paths_as_hints(final_paths)
-        top_path_passages_text = self._format_passages_original(top_path_passages)
-        combined_info = (
-            "---Top Retrieved Metadata Paths (TOP-30 by score, UNIQUE; reused from SQs)---\n"
-            "The paths below are strong hints for where the answer might be found. "
-            "Use them to focus your reading of the passages, but do NOT treat them as guaranteed truth.\n\n"
-            f"{paths_text}\n\n"
-            "---Top Passages from High-Score Paths (TOP-5 by doc_id)---\n"
-            f"{top_path_passages_text}"
+
+        docs: List[Tuple[str, str]] = []
+        for p in top_path_passages:
+            title = p.get('title') or ''
+            original = p.get('original_passage') or ''
+            docs.append((str(title), str(original)))
+
+        previous_context_text = self._build_all_subqa_context(decomposition)
+        facts_text = self._format_paths_as_hints(top_paths) if top_paths else ""
+
+        user_content = self._build_prompt_user_rag_qa_template(
+            docs,
+            main_query,
+            facts_text=facts_text,
+            previous_context_text=previous_context_text,
         )
 
-        prompt = FINAL_ANSWER_SYNTHESIS_PROMPT.replace("{{main_question}}", main_query)
-        prompt = prompt.replace("{{subquestion_chain}}", subquestion_chain)
-        # Inject combined paths+passages into the {{passages}} slot.
-        prompt = prompt.replace("{{passages}}", combined_info)
+        messages = self._build_rag_qa_cot_messages(user_content)
 
         response = await self.client.chat.completions.create(
             model="openai/gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": "You are a precise question answering system. Give short, direct answers."},
-                {"role": "user", "content": prompt},
-            ],
+            messages=messages,
             temperature=0.0,
-            max_tokens=100,
+            max_tokens=COT_MAX_TOKENS,
         )
 
-        answer = response.choices[0].message.content.strip()
+        raw = response.choices[0].message.content.strip()
+        answer = _extract_after_answer_marker(raw)
+
+        context = {
+            "main_query": main_query,
+            "num_passages": len(top_path_passages),
+            "num_paths": len(top_paths),
+            "num_top_path_passages": len(top_path_passages),
+        }
+        try:
+            context["system_message"] = messages[0].get("content", "")
+            context["one_shot_user"] = messages[1].get("content", "")
+            context["one_shot_assistant"] = messages[2].get("content", "")
+        except Exception:
+            pass
+        if self.log_messages:
+            context["chat_messages"] = self._messages_for_log(messages)
 
         log_llm_call(
-            call_type="Final Answer Synthesis (V11-PathsHint)",
-            input_text=prompt,
-            output_text=answer,
-            context={
-                "main_query": main_query,
-                "num_passages": len(top_path_passages),
-                "num_paths": len(final_paths),
-                "num_top_path_passages": len(top_path_passages),
-            },
+            call_type=f"Final Answer Synthesis ({self.dataset_name}-V11-PathsHint + rag_qa_cot)",
+            input_text=user_content,
+            output_text=raw,
+            context=context,
         )
-
-        if answer.startswith("Answer:"):
-            answer = answer[7:].strip()
         return answer
 
     async def answer_subquestion(
@@ -516,12 +619,13 @@ class NewMultihopPipelineV11PathsHint:
     ) -> Dict:
         try:
             actual_question = substitute_answers(sq.question, decomposition.subquestions)
-            previous_context = self._build_simple_previous_context(sq, decomposition)
+            # SQ answering: previous context is intentionally NOT used (user request).
+            previous_context = ""
 
             passages, top_paths = await self.retrieve_for_query(actual_question)
 
             if self.verbose:
-                print(f"\n   Retrieved {len(passages)} passages + {len(top_paths)} paths")
+                print(f"\n   Retrieved {len(passages)} passages + {len(top_paths)} facts")
 
             answer = await self.generate_answer(
                 actual_question,
@@ -541,7 +645,10 @@ class NewMultihopPipelineV11PathsHint:
                 'answer': answer,
                 'actual_question': actual_question,
                 'passages': passages,
+                # Backward compatibility
                 'paths': top_paths,
+                # Preferred naming
+                'facts': top_paths,
             }
         except Exception as e:
             return {'success': False, 'error': str(e)}
@@ -590,8 +697,6 @@ class NewMultihopPipelineV11PathsHint:
             if self.verbose:
                 print("\n[3] Generating final answer...")
 
-            all_passages = self._collect_all_unique_passages(decomposition)
-
             # For reporting, we consider passages used in FINAL answering only.
             final_paths, final_passages = self._select_top_paths_and_passages_from_decomposition(
                 decomposition,
@@ -618,14 +723,19 @@ class NewMultihopPipelineV11PathsHint:
                             'answer': sq.answer,
                             'depends_on': sq.depends_on,
                             'retrieved_passages': getattr(sq, 'retrieved_passages', []),
+                            # Backward compatibility
                             'retrieved_paths': getattr(sq, 'retrieved_paths', []),
+                            # Preferred naming
+                            'retrieved_facts': getattr(sq, 'retrieved_paths', []),
                         }
                         for sq in decomposition.subquestions
                     ],
                 },
-                'num_passages': len(all_passages),
                 'num_passages': len(final_passages),
+                # Backward compatibility
                 'num_paths': len(final_paths),
+                # Preferred naming
+                'num_facts': len(final_paths),
                 'time': elapsed,
             }
 
@@ -646,21 +756,35 @@ async def _quick_smoke_test():
     load_dotenv()
     init_logger()
     client = AsyncOpenAI(api_key=os.getenv('ALICE_OPENAI_KEY'), base_url=os.getenv('ALICE_CHAT_URL'))
+    dataset = os.getenv('DATASET', 'musique').lower()
+    if dataset == 'hotpotqa':
+        data_path = 'HotpotQA/hotpotqa_sample_200.json'
+        db_path = 'HotpotQA/metadata_v4aligned.db'
+        bm25_index_path = 'HotpotQA/bm25_index_v4aligned'
+        embeddings_path = 'HotpotQA/path_embeddings_v4aligned.npz'
+    else:
+        dataset = 'musique'
+        data_path = 'MuSiQue/musique_sample_200.json'
+        db_path = 'MuSiQue/metadata_v4aligned.db'
+        bm25_index_path = 'MuSiQue/bm25_index_v4aligned'
+        embeddings_path = 'MuSiQue/path_embeddings_v4aligned.npz'
+
     retriever = HybridPathRetriever(
         bm25_weight=0.4,
         dense_weight=0.6,
-        bm25_index_path='MuSiQue/bm25_index_v4aligned',
-        embeddings_path='MuSiQue/path_embeddings_v4aligned.npz',
+        bm25_index_path=bm25_index_path,
+        embeddings_path=embeddings_path,
     )
-    pipeline = NewMultihopPipelineV11PathsHint(
+    pipeline = NewMultihopPipelineV11PathsHintCoT(
         client=client,
         retriever=retriever,
-        hotpotqa_path='MuSiQue/musique_sample_200.json',
-        db_path='MuSiQue/metadata_v4aligned.db',
+        data_path=data_path,
+        db_path=db_path,
         verbose=True,
+        dataset_name=dataset,
     )
 
-    with open('MuSiQue/musique_sample_200.json', 'r', encoding='utf-8') as f:
+    with open(data_path, 'r', encoding='utf-8') as f:
         data = json.load(f)
     q = data[0]['question']
     res = await pipeline.process_question(q)
@@ -671,3 +795,7 @@ async def _quick_smoke_test():
 
 if __name__ == '__main__':
     asyncio.run(_quick_smoke_test())
+
+
+# Backward-compatible alias (older scripts import this name)
+MuSiQueMultihopPipelineV11PathsHint = NewMultihopPipelineV11PathsHintCoT

@@ -11,11 +11,11 @@ it uses Prompt/rag_qa_cot.py `prompt_template` (one-shot) by injecting `${prompt
 Dataset-compatible (hotpotqa / musique).
 
 Usage:
-    python NaiveRAG/NaiveRAG_passage_QD_cot.py --dataset hotpotqa
-    python NaiveRAG/NaiveRAG_passage_QD_cot.py --dataset musique
+    python NaiveRAG/NaiveRAG_passage_QD_cot.py --dataset hotpotqa --k 5
+    python NaiveRAG/NaiveRAG_passage_QD_cot.py --dataset musique --k 5
 
 Evaluation:
-    python evaluate_mrqa_cot.py Results/NaiveRAG/NaiveRAG_passage_QD_cot_hotpotqa.json
+    python evaluate_mrqa_cot.py Results/NaiveRAG/NaiveRAG_passage_QD_cot_hotpotqa_k5.json
 """
 
 import argparse
@@ -34,8 +34,22 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from NaiveRAG.naive_passage_retriever import NaivePassageRetriever
 from query_decomposition import decompose_query, substitute_answers
-from llm_logger import init_logger, log_llm_call
-from Prompt.rag_qa_cot import prompt_template
+from llm_logger import init_logger, finalize_log, log_llm_call
+from Prompt.rag_qa_cot import fact_rag_qa_system, prompt_template_fact as prompt_template
+
+
+COT_MAX_TOKENS = int(os.getenv("COT_MAX_TOKENS", "2048"))
+
+
+def _extract_after_answer_marker(text: str) -> str:
+    if not text:
+        return ""
+    lower = text.lower()
+    marker = "answer:"
+    marker_idx = lower.rfind(marker)
+    if marker_idx == -1:
+        return text.strip()
+    return text[marker_idx + len(marker):].strip()
 
 
 def _build_rag_qa_cot_messages(prompt_user: str):
@@ -44,49 +58,84 @@ def _build_rag_qa_cot_messages(prompt_user: str):
     return messages
 
 
-async def _call_cot(client: AsyncOpenAI, prompt_user: str) -> str:
+def _build_prompt_user_rag_qa_template(
+    passages,
+    question: str,
+    *,
+    previous_context_text: str = "",
+) -> str:
+    """Build user content matching Prompt/rag_qa_cot.py one-shot format.
+
+    Only real passages are formatted with `Wikipedia Title:`.
+    Previous context is included as an explicit section.
+    """
+    parts = []
+    # Make the instruction visible in FULL PROMPT (user request).
+    parts.append("---Instruction---\n" + fact_rag_qa_system.strip())
+    if previous_context_text and previous_context_text.strip():
+        parts.append("---Previous Context---\n" + previous_context_text.strip())
+
+    docs = ""
+    for title, text in passages:
+        docs += f"Wikipedia Title: {title}\n{text}\n"
+    parts.append(docs.strip())
+
+    return "\n\n".join([p for p in parts if p.strip()]) + f"\n\nQuestion: {question}\nThought: "
+
+
+def _build_all_subqa_context(decomposition) -> str:
+    context_parts = []
+    for sq in decomposition.subquestions:
+        if getattr(sq, 'answer', None):
+            context_parts.append(f"{sq.id}: {sq.question}")
+            context_parts.append(f"Answer: {sq.answer}")
+            context_parts.append("")
+    if context_parts:
+        return "Previous Sub-Questions:\n" + "\n".join(context_parts)
+    return ""
+
+
+async def _call_cot(client: AsyncOpenAI, prompt_user: str):
+    messages = _build_rag_qa_cot_messages(prompt_user)
     response = await client.chat.completions.create(
         model="openai/gpt-4o-mini",
-        messages=_build_rag_qa_cot_messages(prompt_user),
+        messages=messages,
         temperature=0.0,
-        max_tokens=200,
+        max_tokens=COT_MAX_TOKENS,
     )
-    return response.choices[0].message.content.strip()
+    return response.choices[0].message.content.strip(), messages
 
 
-async def answer_subquestion(client, retriever, sq, decomposition, previous_context):
+async def answer_subquestion(client, retriever, sq, decomposition, previous_context, k: int):
     actual_question = substitute_answers(sq.question, decomposition.subquestions)
 
-    results = await retriever.search(actual_question, k=3)
+    results = await retriever.search(actual_question, k=k)
 
-    passage_text = ""
-    for i, res in enumerate(results, 1):
-        passage_text += f"[{i}] {res['title']}\n{res['text']}\n\n"
+    passages_for_template = [(r["title"], r["text"]) for r in results]
+    # SQ answering: do NOT include previous context (user request).
+    prompt_user = _build_prompt_user_rag_qa_template(passages_for_template, actual_question)
 
-    info_blocks = []
-    if previous_context.strip():
-        info_blocks.append("---Previous Context---\n" + previous_context.strip())
-    info_blocks.append("---Passages---\n" + passage_text.strip())
-
-    prompt_user = "---Information---\n" + "\n\n".join(info_blocks) + f"\n\n---Query---\n{actual_question}"
-
-    answer = await _call_cot(client, prompt_user)
+    raw, messages = await _call_cot(client, prompt_user)
+    answer = _extract_after_answer_marker(raw)
 
     log_llm_call(
         call_type="SubQuestion Answering (NaiveRAG CoT)",
         input_text=prompt_user,
-        output_text=answer,
+        output_text=raw,
         context={
             "subquestion": actual_question,
             "num_passages": len(results),
             "passages": [r["title"] for r in results],
+            "system_message": messages[0].get("content", "") if messages else "",
+            "one_shot_user": messages[1].get("content", "") if isinstance(messages, list) and len(messages) > 1 else "",
+            "one_shot_assistant": messages[2].get("content", "") if isinstance(messages, list) and len(messages) > 2 else "",
         },
     )
 
     return answer, results
 
 
-async def process_question(client, retriever, item):
+async def process_question(client, retriever, item, k: int):
     question = item["question"]
 
     decomposition_result = await decompose_query(client, question)
@@ -95,43 +144,46 @@ async def process_question(client, retriever, item):
 
     decomposition = decomposition_result["decomposition"]
 
-    all_passages = {}
+    all_passages = {}  # title -> {text, best_score}
 
     for sq in decomposition.subquestions:
-        prev_context = ""
-        if sq.depends_on:
-            for dep_id in sq.depends_on:
-                dep_sq = decomposition.get_subquestion(dep_id)
-                if dep_sq and dep_sq.answer:
-                    prev_context += f"Q: {dep_sq.question}\nA: {dep_sq.answer}\n\n"
-
-        answer, results = await answer_subquestion(client, retriever, sq, decomposition, prev_context)
+        # SQ answering: always omit previous context.
+        answer, results = await answer_subquestion(client, retriever, sq, decomposition, "", k=k)
         sq.answer = answer
         sq.retrieved_passages = results
 
         for res in results:
-            all_passages[res["title"]] = res["text"]
+            title = res["title"]
+            score = float(res.get('score', 0.0))
+            if title not in all_passages or score > all_passages[title]['best_score']:
+                all_passages[title] = {'text': res["text"], 'best_score': score}
 
-    unique_passages_text = ""
-    for i, (title, text) in enumerate(all_passages.items(), 1):
-        unique_passages_text += f"[{i}] {title}\n{text}\n\n"
+    ranked = sorted(all_passages.items(), key=lambda kv: kv[1]["best_score"], reverse=True)
+    top_passages = ranked[:5]
 
-    chain_text = ""
-    for sq in decomposition.subquestions:
-        chain_text += f"{sq.id}: {sq.question}\n{sq.answer}\n\n"
+    passages_for_template = [(title, payload["text"]) for (title, payload) in top_passages]
 
-    final_info = "---Subquestion Chain---\n" + chain_text.strip() + "\n\n---Passages---\n" + unique_passages_text.strip()
-    prompt_user = f"---Information---\n{final_info}\n\n---Query---\n{question}"
+    # Final answering: include ALL SQ Q/A as previous context.
+    prev_context_text = _build_all_subqa_context(decomposition)
+    prompt_user = _build_prompt_user_rag_qa_template(
+        passages_for_template,
+        question,
+        previous_context_text=prev_context_text,
+    )
 
-    final_answer = await _call_cot(client, prompt_user)
+    raw_final, messages = await _call_cot(client, prompt_user)
+    final_answer = _extract_after_answer_marker(raw_final)
 
     log_llm_call(
         call_type="Final Answer Synthesis (NaiveRAG CoT)",
         input_text=prompt_user,
-        output_text=final_answer,
+        output_text=raw_final,
         context={
             "main_query": question,
             "num_unique_passages": len(all_passages),
+            "system_message": messages[0].get("content", "") if messages else "",
+            "one_shot_user": messages[1].get("content", "") if isinstance(messages, list) and len(messages) > 1 else "",
+            "one_shot_assistant": messages[2].get("content", "") if isinstance(messages, list) and len(messages) > 2 else "",
         },
     )
 
@@ -148,6 +200,7 @@ async def process_question(client, retriever, item):
 async def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset", type=str, default="hotpotqa", choices=["hotpotqa", "musique"])
+    parser.add_argument("--k", type=int, default=5, help="Number of passages per sub-question (default: 5)")
     args = parser.parse_args()
 
     load_dotenv()
@@ -177,27 +230,28 @@ async def main():
         data = json.load(f)
 
     results = []
-    print(f"Processing {len(data)} questions with QD (CoT)...")
+    print(f"Processing {len(data)} questions with QD (CoT, k={args.k})...")
 
     start_time = time.time()
 
-    batch_size = 50
+    batch_size = 100
     for i in range(0, len(data), batch_size):
         batch = data[i : i + batch_size]
-        tasks = [process_question(chat_client, retriever, item) for item in batch]
+        tasks = [process_question(chat_client, retriever, item, k=args.k) for item in batch]
         batch_results = await asyncio.gather(*tasks)
         results.extend(batch_results)
         print(f"Processed {min(i + batch_size, len(data))}/{len(data)}")
 
     total_time = time.time() - start_time
 
-    output_file = f"Results/NaiveRAG/NaiveRAG_passage_QD_cot_{args.dataset}.json"
+    output_file = f"Results/NaiveRAG/NaiveRAG_passage_QD_cot_{args.dataset}_k{args.k}.json"
     os.makedirs("Results/NaiveRAG", exist_ok=True)
 
     output = {
         "config": {
             "pipeline": "NaiveRAG_QD_CoT",
             "dataset": args.dataset,
+            "k": args.k,
             "model": "gpt-4o-mini",
         },
         "summary": {
@@ -212,6 +266,8 @@ async def main():
         json.dump(output, f, indent=2, ensure_ascii=False)
 
     print(f"Saved results to {output_file}")
+    log_path = finalize_log()
+    print(f"[LOG] {log_path}")
 
 
 if __name__ == "__main__":

@@ -24,7 +24,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 from openai import AsyncOpenAI
 
-from new_multihop_pipeline_no_link import NewMultihopPipelineV3
+from new_multihop_pipeline_paths_hint import NewMultihopPipelineV11PathsHint
 
 
 CONCURRENCY = 100
@@ -32,15 +32,15 @@ CONCURRENCY = 100
 DATASET_CONFIGS = {
     'hotpotqa': {
         'data_path': 'HotpotQA/hotpotqa_sample_200.json',
-        'db_path': 'HotpotQA/metadata_v3.db',
-        'bm25_index': 'HotpotQA/bm25_index',
-        'embeddings': 'HotpotQA/path_embeddings.npz',
+        'db_path': 'HotpotQA/metadata_v4aligned.db',
+        'bm25_index': 'HotpotQA/bm25_index_v4aligned',
+        'embeddings': 'HotpotQA/path_embeddings_v4aligned.npz',
     },
     'musique': {
         'data_path': 'MuSiQue/musique_sample_200.json',
-        'db_path': 'MuSiQue/metadata_v3.db',
-        'bm25_index': 'MuSiQue/bm25_index',
-        'embeddings': 'MuSiQue/path_embeddings.npz',
+        'db_path': 'MuSiQue/metadata_v4aligned.db',
+        'bm25_index': 'MuSiQue/bm25_index_v4aligned',
+        'embeddings': 'MuSiQue/path_embeddings_v4aligned.npz',
     }
 }
 
@@ -195,13 +195,15 @@ async def run_test(retriever_type: str, dataset: str):
     
     retriever = get_retriever(retriever_type, config)
     
-    pipeline = NewMultihopPipelineV3(
+    pipeline = NewMultihopPipelineV11PathsHint(
         client=client,
         retriever=retriever,
         hotpotqa_path=config['data_path'],
         db_path=config['db_path'],
-        top_k=3,
-        verbose=False
+        top_k_passages=5,
+        top_k_paths=30,
+        path_fetch_k=50,
+        verbose=False,
     )
     
     # Load data
@@ -263,9 +265,10 @@ async def run_test(retriever_type: str, dataset: str):
             'experiment': f'ablation_{retriever_type}',
             'retriever_type': retriever_type,
             'dataset': dataset,
-            'pipeline_version': 'v3',
+            'pipeline_version': 'v11',
             'concurrency': CONCURRENCY,
-            'top_k': 3
+            'top_k_passages': 5,
+            'top_k_paths': 30
         },
         'summary': {
             'total_questions': total,

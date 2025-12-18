@@ -23,48 +23,9 @@ from openai import AsyncOpenAI
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from NaiveRAG.naive_passage_retriever import NaivePassageRetriever
-from llm_logger import log_llm_call
+from llm_logger import init_logger, finalize_log, log_llm_call
 
-# Use the same prompt as the ablation no-decomp script or a standard RAG prompt
-# Since user asked to use "existing prompts", we can adapt FINAL_ANSWER_SYNTHESIS_PROMPT
-# or use the DIRECT_ANSWER_PROMPT from the ablation script which is designed for this.
-# Let's use DIRECT_ANSWER_PROMPT for consistency with the "No QD" approach.
-
-DIRECT_ANSWER_PROMPT = """---Role---
-You are a multi-hop retrieval-augmented assistant.
-
----Goal---
-Read the provided Information and generate the correct answer to the Question.
-Use ONLY the given Information to derive your answer.
-
----Critical Instructions---
-1. Read ALL provided passages carefully
-2. Extract relevant facts from the passages
-3. Combine information from multiple passages if needed
-4. Perform simple reasoning if required (arithmetic, temporal logic, comparisons)
-
----Target response length and format---
-- One-word or minimal-phrase answer (max 5 words).
-
----Response Rules---
-✓ Use ONLY the information provided in the passages
-✓ Check ALL passages thoroughly
-✓ You CAN perform simple reasoning on passage information
-✓ Answer must be short and concise
-✓ Answer language must match the Question language
-✗ Do NOT use external knowledge not present in passages
-✗ Do NOT hallucinate or invent facts
-✗ ONLY respond "Insufficient information." if passages truly lack the needed information
-
----Information---
-{passages}
-
----Question---
-{question}
-
----Answer---
-Provide only the answer (max 5 words).
-"""
+from Prompt.subquestion_answering_prompt import NAIVE_RAG_FINAL_ANSWER_PROMPT
 
 async def process_question(client, retriever, item, k):
     question = item['question']
@@ -77,20 +38,32 @@ async def process_question(client, retriever, item, k):
     for i, res in enumerate(results, 1):
         passage_text += f"[{i}] {res['title']}\n{res['text']}\n\n"
         
-    # Generate Answer
-    prompt = DIRECT_ANSWER_PROMPT.format(passages=passage_text, question=question)
+    prompt = NAIVE_RAG_FINAL_ANSWER_PROMPT.replace("{{passages}}", passage_text.strip())
+    prompt = prompt.replace("{{question}}", question)
     
     response = await client.chat.completions.create(
         model="openai/gpt-4o-mini", # Or whatever model is standard
         messages=[
             {"role": "system", "content": "You are a precise question answering system."},
-            {"role": "user", "content": prompt}
+            {"role": "user", "content": prompt},
         ],
         temperature=0.0,
         max_tokens=50
     )
     
     answer = response.choices[0].message.content.strip()
+
+    log_llm_call(
+        call_type="Answer Generation (NaiveRAG No_QD)",
+        input_text=prompt,
+        output_text=answer,
+        context={
+            "question": question,
+            "k": k,
+            "num_passages": len(results),
+            "passages": [r['title'] for r in results],
+        },
+    )
     
     return {
         'id': item.get('_id'),
@@ -103,11 +76,12 @@ async def process_question(client, retriever, item, k):
 
 async def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--k', type=int, default=5, help='Number of passages to retrieve')
+    parser.add_argument('--k', type=int, default=5, help='Number of passages to retrieve (fixed at 5 by default)')
     parser.add_argument('--dataset', type=str, default='hotpotqa', choices=['hotpotqa', 'musique'])
     args = parser.parse_args()
     
     load_dotenv()
+    init_logger()
     
     # Config
     if args.dataset == 'hotpotqa':
@@ -175,6 +149,8 @@ async def main():
         json.dump(output, f, indent=2, ensure_ascii=False)
         
     print(f"Saved results to {output_file}")
+    log_path = finalize_log()
+    print(f"[LOG] {log_path}")
 
 if __name__ == "__main__":
     asyncio.run(main())

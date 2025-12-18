@@ -31,17 +31,17 @@ CONCURRENCY = 100
 DATASET_CONFIGS = {
     'hotpotqa': {
         'data_path': 'HotpotQA/hotpotqa_sample_200.json',
-        'db_path': 'HotpotQA/metadata_v3.db',
-        'bm25_index': 'HotpotQA/bm25_index',
-        'embeddings': 'HotpotQA/path_embeddings.npz',
-        'result_path': 'Results/ablation_no_decomp_hotpotqa_results.json',
+        'db_path': 'HotpotQA/metadata_v4aligned.db',
+        'bm25_index': 'HotpotQA/bm25_index_v4aligned',
+        'embeddings': 'HotpotQA/path_embeddings_v4aligned.npz',
+        'result_path': 'Results/ablation_no_decomp_hotpotqa_results_v4aligned.json',
     },
     'musique': {
         'data_path': 'MuSiQue/musique_sample_200.json',
-        'db_path': 'MuSiQue/metadata_v3.db',
-        'bm25_index': 'MuSiQue/bm25_index',
-        'embeddings': 'MuSiQue/path_embeddings.npz',
-        'result_path': 'Results/ablation_no_decomp_musique_results.json',
+        'db_path': 'MuSiQue/metadata_v4aligned.db',
+        'bm25_index': 'MuSiQue/bm25_index_v4aligned',
+        'embeddings': 'MuSiQue/path_embeddings_v4aligned.npz',
+        'result_path': 'Results/ablation_no_decomp_musique_results_v4aligned.json',
     }
 }
 

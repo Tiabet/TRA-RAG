@@ -12,6 +12,15 @@ rag_qa_system = (
     'Conclude with "Answer: " to present a concise, definitive response, devoid of additional elaborations.'
 )
 
+# NOTE: Do NOT modify `rag_qa_system`. For pipelines that pass additional retrieved facts/hints,
+# use this alternative system message.
+fact_rag_qa_system = (
+    'As an advanced reading comprehension assistant, your task is to analyze text passages and corresponding questions meticulously. '
+    'You will additionally be given facts related to the passages, which may serve as strong hints. If the answer cannot be determined, respond with "Insufficient Information".'
+    ' Your response start after "Thought: ", where you will methodically break down the reasoning process, illustrating how you arrive at conclusions. '
+    'Conclude with "Answer: " to present a concise, definitive response, devoid of additional elaborations.'
+)
+
 one_shot_rag_qa_input = (
     f"{one_shot_rag_qa_docs}"
     "\n\nQuestion: "
@@ -27,6 +36,15 @@ one_shot_rag_qa_output = (
 
 prompt_template = [
     {"role": "system", "content": rag_qa_system},
+    {"role": "user", "content": one_shot_rag_qa_input},
+    {"role": "assistant", "content": one_shot_rag_qa_output},
+    {"role": "user", "content": "${prompt_user}"}
+]
+
+
+# Same one-shot example, but with `fact_rag_qa_system` for runs that include extra facts/hints.
+prompt_template_fact = [
+    {"role": "system", "content": fact_rag_qa_system},
     {"role": "user", "content": one_shot_rag_qa_input},
     {"role": "assistant", "content": one_shot_rag_qa_output},
     {"role": "user", "content": "${prompt_user}"}

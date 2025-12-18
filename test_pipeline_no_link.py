@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""
-Test New Multi-hop Pipeline v3 (Original Passages) on 200 Questions
-====================================================================
+"""\
+Test New Multi-hop Pipeline v11 (Paths-as-Hints) on 200 Questions
+================================================================
 Unified pipeline test script for HotpotQA and MuSiQue datasets.
 
 Usage:
@@ -20,9 +20,9 @@ from pathlib import Path
 from dotenv import load_dotenv
 from openai import AsyncOpenAI
 
-from new_multihop_pipeline_no_link import NewMultihopPipelineV3
 from new_multihop_pipeline_paths_hint import NewMultihopPipelineV11PathsHint
 from hybrid_path_retriever import HybridPathRetriever
+from llm_logger import init_logger, finalize_log
 
 
 # Concurrency settings
@@ -32,17 +32,17 @@ CONCURRENCY = 100
 DATASET_CONFIGS = {
     'hotpotqa': {
         'data_path': 'HotpotQA/hotpotqa_sample_200.json',
-        'db_path': 'HotpotQA/metadata_v3.db',
-        'bm25_index': 'HotpotQA/bm25_index',
-        'embeddings': 'HotpotQA/path_embeddings.npz',
-        'result_path': 'Results/test_hotpot_v6_200_results.json',
+        'db_path': 'HotpotQA/metadata_v4aligned.db',
+        'bm25_index': 'HotpotQA/bm25_index_v4aligned',
+        'embeddings': 'HotpotQA/path_embeddings_v4aligned.npz',
+        'result_path': 'Results/test_hotpot_v11_200_results_v4aligned.json',
     },
     'musique': {
         'data_path': 'MuSiQue/musique_sample_200.json',
-        'db_path': 'MuSiQue/metadata_v3.db',
-        'bm25_index': 'MuSiQue/bm25_index',
-        'embeddings': 'MuSiQue/path_embeddings.npz',
-        'result_path': 'Results/test_musique_v10_200_results.json',
+        'db_path': 'MuSiQue/metadata_v4aligned.db',
+        'bm25_index': 'MuSiQue/bm25_index_v4aligned',
+        'embeddings': 'MuSiQue/path_embeddings_v4aligned.npz',
+        'result_path': 'Results/test_musique_v11_200_results_v4aligned.json',
     }
 }
 
@@ -62,7 +62,9 @@ async def process_single_question(pipeline, item, idx, total):
         if result['success']:
             predicted = result['final_answer']
             num_passages = result.get('num_passages', 0)
-            print(f"[{idx+1:3d}/{total}] [OK] ({elapsed:.1f}s, {num_passages}p) {question[:50]}...")
+            num_paths = result.get('num_paths', None)
+            paths_str = f", {num_paths}paths" if isinstance(num_paths, int) else ""
+            print(f"[{idx+1:3d}/{total}] [OK] ({elapsed:.1f}s, {num_passages}p{paths_str}) {question[:50]}...")
             print(f"           Gold: {gold_answer}")
             print(f"           Pred: {predicted}")
             
@@ -74,6 +76,7 @@ async def process_single_question(pipeline, item, idx, total):
                 'answer_aliases': item.get('answer_aliases', []),  # MuSiQue support
                 'time': elapsed,
                 'num_passages': num_passages,
+                'num_paths': result.get('num_paths', None),
                 'success': True,
                 'decomposition': result.get('decomposition')
             }
@@ -138,13 +141,10 @@ async def run_batch(pipeline, items, start_idx, total):
 
 def parse_args():
     """Parse command line arguments."""
-    parser = argparse.ArgumentParser(description='Test Pipeline v3 on multi-hop QA datasets')
+    parser = argparse.ArgumentParser(description='Test Pipeline v11 (paths-as-hints) on multi-hop QA datasets')
     parser.add_argument('--dataset', type=str, default='hotpotqa',
                         choices=['hotpotqa', 'musique'],
                         help='Dataset to use (default: hotpotqa)')
-    parser.add_argument('--pipeline', type=str, default='v11',
-                        choices=['v3', 'v11'],
-                        help='Pipeline version to run (default: v3). v11 uses paths-as-hints for SQ answering.')
     parser.add_argument('--result_path', type=str, default=None,
                         help='Optional override for output results JSON path')
     parser.add_argument('--max_questions', type=int, default=None,
@@ -161,17 +161,14 @@ async def run_test(args):
     dataset = args.dataset.lower()
     config = DATASET_CONFIGS[dataset]
     concurrency = args.concurrency
-    pipeline_version = args.pipeline.lower()
+    pipeline_version = 'v11'
     
     print("="*80)
     print(f"Multi-hop Pipeline {pipeline_version.upper()} Test - {dataset.upper()}")
     print("="*80)
     print(f"Dataset: {dataset}")
     print(f"Concurrency: {concurrency}")
-    if pipeline_version == 'v11':
-        print("Mode: Hybrid Retrieval + Original Passage Answering + Path Hints")
-    else:
-        print("Mode: Hybrid Retrieval + Original Passage Answering")
+    print("Mode: Hybrid Retrieval + Original Passage Answering + Path Hints")
     print(f"Start time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     
     # Initialize components
@@ -187,26 +184,18 @@ async def run_test(args):
         embeddings_path=config['embeddings']
     )
 
-    if pipeline_version == 'v11':
-        pipeline = NewMultihopPipelineV11PathsHint(
-            client=client,
-            retriever=retriever,
-            hotpotqa_path=config['data_path'],
-            db_path=config['db_path'],
-            top_k_passages=3,
-            top_k_paths=10,
-            path_fetch_k=50,
-            verbose=False,
-        )
-    else:
-        pipeline = NewMultihopPipelineV3(
-            client=client,
-            retriever=retriever,
-            hotpotqa_path=config['data_path'],
-            db_path=config['db_path'],
-            top_k=3,
-            verbose=False
-        )
+    top_k_passages = 5
+    top_k_paths = 30
+    pipeline = NewMultihopPipelineV11PathsHint(
+        client=client,
+        retriever=retriever,
+        hotpotqa_path=config['data_path'],
+        db_path=config['db_path'],
+        top_k_passages=top_k_passages,
+        top_k_paths=top_k_paths,
+        path_fetch_k=50,
+        verbose=False,
+    )
     
     # Load dataset
     print(f"\n📂 Loading data from: {config['data_path']}")
@@ -223,17 +212,7 @@ async def run_test(args):
     Path('Results').mkdir(parents=True, exist_ok=True)
 
     # Decide output file early so we can write incremental snapshots
-    if args.result_path:
-        output_file = args.result_path
-    else:
-        # Default to config path, but make v11 explicit in filename
-        if pipeline_version == 'v11':
-            if dataset == 'musique':
-                output_file = 'Results/test_musique_v11_200_results.json'
-            else:
-                output_file = 'Results/test_hotpot_v11_200_results.json'
-        else:
-            output_file = config['result_path']
+    output_file = args.result_path or config['result_path']
     
     # Analyze hop distribution (for MuSiQue)
     if dataset == 'musique':
@@ -265,13 +244,21 @@ async def run_test(args):
             if successful_results_local else 0
         )
 
+        total_paths_local = sum((r.get('num_paths') or 0) for r in successful_results_local)
+        avg_paths_local = (
+            total_paths_local / len(successful_results_local)
+            if successful_results_local else 0
+        )
+
         output_local = {
             'config': {
                 'pipeline_version': pipeline_version,
                 'dataset': dataset,
-                'mode': 'hybrid_retrieval_original_passages' if pipeline_version == 'v3' else 'hybrid_retrieval_original_passages_plus_path_hints',
+                'mode': 'hybrid_retrieval_original_passages_plus_path_hints',
                 'concurrency': concurrency,
-                'top_k': 3,
+                'top_k': top_k_passages,
+                'top_k_passages': top_k_passages,
+                'top_k_paths': top_k_paths,
                 'bm25_weight': 0.4,
                 'dense_weight': 0.6
             },
@@ -284,6 +271,8 @@ async def run_test(args):
                 'avg_time_per_question': avg_time_local,
                 'total_passages': total_passages_local,
                 'avg_passages_per_question': avg_passages_local,
+                'total_paths': total_paths_local,
+                'avg_paths_per_question': avg_paths_local,
                 'timestamp': datetime.now().isoformat(),
                 'is_final': bool(is_final)
             },
@@ -337,10 +326,7 @@ async def run_test(args):
     print("COMPLETED")
     print("="*80)
     print(f"Dataset: {dataset.upper()}")
-    if pipeline_version == 'v11':
-        print("Pipeline: v11 (Hybrid + Original Passages + Path Hints)")
-    else:
-        print("Pipeline: v3 (Hybrid Retrieval + Original Passages)")
+    print("Pipeline: v11 (Hybrid + Original Passages + Path Hints)")
     print(f"Total Questions: {total}")
     print(f"Successful: {success_count}")
     print(f"Errors: {error_count}")
@@ -357,6 +343,7 @@ async def run_test(args):
     print(f"\nResults saved to: {output_file}")
     print(f"\nRun evaluation with:")
     print(f"   python evaluate_mrqa.py {output_file}")
+    print(f"   python evaluate_retrieval.py --result_path {output_file} --gold_path {config['data_path']} --key doc_id --check_mapping")
     
     pipeline.close()
 
@@ -379,4 +366,8 @@ def convert_to_serializable(obj):
 
 if __name__ == "__main__":
     args = parse_args()
-    asyncio.run(run_test(args))
+    init_logger()
+    try:
+        asyncio.run(run_test(args))
+    finally:
+        finalize_log()

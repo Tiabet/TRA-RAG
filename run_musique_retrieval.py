@@ -8,7 +8,9 @@ from pathlib import Path
 from dotenv import load_dotenv
 from openai import AsyncOpenAI
 
-from new_multihop_pipeline_no_link import NewMultihopPipelineV3
+from llm_logger import init_logger, finalize_log
+
+from new_multihop_pipeline_paths_hint import NewMultihopPipelineV11PathsHint
 from hybrid_path_retriever import HybridPathRetriever
 
 # Load environment variables
@@ -121,6 +123,8 @@ async def run_musique_retrieval():
     print(f"Running MuSiQue Pipeline on ALL 200 questions (Concurrent)")
     print("="*80)
 
+    init_logger()
+
     # Initialize components
     client = AsyncOpenAI(
         api_key=os.getenv('ALICE_OPENAI_KEY'),
@@ -128,19 +132,21 @@ async def run_musique_retrieval():
     )
     
     retriever = HybridPathRetriever(
-        bm25_index_path='MuSiQue/bm25_index',
-        embeddings_path='MuSiQue/path_embeddings.npz',
+        bm25_index_path='MuSiQue/bm25_index_v4aligned',
+        embeddings_path='MuSiQue/path_embeddings_v4aligned.npz',
         bm25_weight=0.4,
         dense_weight=0.6
     )
     
-    pipeline = NewMultihopPipelineV3(
+    pipeline = NewMultihopPipelineV11PathsHint(
         client=client,
         retriever=retriever,
         hotpotqa_path=DATA_PATH,
-        db_path='MuSiQue/metadata_v3.db',
-        top_k=3,
-        verbose=False 
+        db_path='MuSiQue/metadata_v4aligned.db',
+        top_k_passages=5,
+        top_k_paths=30,
+        path_fetch_k=50,
+        verbose=False,
     )
     
     # Load Data
@@ -179,6 +185,9 @@ async def run_musique_retrieval():
     print(f"Total Time: {total_time:.1f}s")
     
     pipeline.close()
+
+    log_path = finalize_log()
+    print(f"[LOG] {log_path}")
 
 if __name__ == "__main__":
     asyncio.run(run_musique_retrieval())

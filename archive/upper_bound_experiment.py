@@ -41,7 +41,7 @@ MODEL = "openai/gpt-4o-mini"
 DATASET_CONFIGS = {
     'hotpotqa': {
         'data_path': 'HotpotQA/hotpotqa_sample_200.json',
-        'db_path': 'HotpotQA/metadata_v3.db',
+        'db_path': 'HotpotQA/metadata_v4aligned.db',
         'result_metadata': 'Results/upper_bound_metadata_results.json',
         'result_original': 'Results/upper_bound_original_results.json',
         'result_metadata_final': 'Results/upper_bound_metadata_results_finalprompt.json',
@@ -49,11 +49,11 @@ DATASET_CONFIGS = {
     },
     'musique': {
         'data_path': 'MuSiQue/musique_sample_200.json',
-        'db_path': 'MuSiQue/metadata_v3.db',
-        'result_metadata': 'Results/upper_bound_musique_metadata_results.json',
-        'result_original': 'Results/upper_bound_musique_original_results.json',
-        'result_metadata_final': 'Results/upper_bound_musique_metadata_results_finalprompt.json',
-        'result_original_final': 'Results/upper_bound_musique_original_results_finalprompt.json',
+        'db_path': 'MuSiQue/metadata_v4aligned.db',
+        'result_metadata': 'Results/upper_bound_musique_metadata_results_v4aligned.json',
+        'result_original': 'Results/upper_bound_musique_original_results_v4aligned.json',
+        'result_metadata_final': 'Results/upper_bound_musique_metadata_results_finalprompt_v4aligned.json',
+        'result_original_final': 'Results/upper_bound_musique_original_results_finalprompt_v4aligned.json',
     }
 }
 
@@ -144,16 +144,37 @@ async def process_question_metadata(
         # Get supporting fact titles
         sf_titles = list(set([sf[0] for sf in sample["supporting_facts"]]))
         
-        # Get metadata for each title
+        # Get metadata for each title.
+        # NOTE (MuSiQue): the same title can map to multiple doc_ids/rows in the DB.
         passages_text = ""
         found_titles = []
-        for i, title in enumerate(sf_titles, 1):
-            if title in metadata_db:
-                metadata = metadata_db[title]
-                passages_text += f"[{i}] {title}\n"
-                passages_text += json.dumps(metadata, ensure_ascii=False, indent=2)
+        injected_entries = 0
+        for title in sf_titles:
+            entries = metadata_db.get(title, [])
+            if not entries:
+                continue
+            found_titles.append(title)
+
+            seen = set()
+            for entry in entries:
+                # entry is expected to be {'doc_id': str|None, 'metadata': dict}
+                doc_id = entry.get('doc_id')
+                meta = entry.get('metadata')
+                try:
+                    key = json.dumps(meta, sort_keys=True, ensure_ascii=False)
+                except Exception:
+                    key = str(meta)
+                if key in seen:
+                    continue
+                seen.add(key)
+
+                injected_entries += 1
+                header = f"[{injected_entries}] {title}"
+                if doc_id:
+                    header += f" ({doc_id})"
+                passages_text += header + "\n"
+                passages_text += json.dumps(meta, ensure_ascii=False, indent=2)
                 passages_text += "\n\n"
-                found_titles.append(title)
         
         if not passages_text:
             return {
@@ -164,6 +185,7 @@ async def process_question_metadata(
                 "answer_aliases": sample.get("answer_aliases", []),
                 "sf_titles": sf_titles,
                 "found_titles": found_titles,
+                "num_injected_metadata_entries": 0,
                 "success": False
             }
         
@@ -181,6 +203,7 @@ async def process_question_metadata(
             "answer_aliases": sample.get("answer_aliases", []),
             "sf_titles": sf_titles,
             "found_titles": found_titles,
+            "num_injected_metadata_entries": injected_entries,
             "success": True
         }
 
@@ -204,16 +227,40 @@ async def process_question_original(
                 sf_info[title] = set()
             sf_info[title].add(sent_idx)
         
-        # Get original passages from context
+        # Get original passages from context.
+        # NOTE (MuSiQue): the same title may appear multiple times in `context`.
+        # A plain dict {title: sentences} will overwrite earlier entries and can drop the true gold passage.
+        from collections import defaultdict
+
+        context_by_title = defaultdict(list)
+        for title, sentences in sample.get("context", []):
+            context_by_title[title].append(sentences)
+
         passages_text = ""
-        context_dict = {ctx[0]: ctx[1] for ctx in sample["context"]}
-        
-        for i, (title, sent_indices) in enumerate(sf_info.items(), 1):
-            if title in context_dict:
-                sentences = context_dict[title]
-                # Get all sentences from the passage (not just supporting fact sentences)
-                full_passage = "".join(sentences) if isinstance(sentences, list) else sentences
-                passages_text += f"[{i}] {title}\n{full_passage}\n\n"
+        injected_titles = []
+        ambiguous_titles = []
+        passage_counter = 0
+        for title, _sent_indices in sf_info.items():
+            occurrences = context_by_title.get(title, [])
+            if not occurrences:
+                continue
+            injected_titles.append(title)
+            if len(occurrences) > 1:
+                ambiguous_titles.append(title)
+
+            seen_texts = set()
+            for occ_idx, sents in enumerate(occurrences, 1):
+                full_passage = "".join(sents) if isinstance(sents, list) else str(sents)
+                full_passage = full_passage.strip()
+                if not full_passage:
+                    continue
+                if full_passage in seen_texts:
+                    continue
+                seen_texts.add(full_passage)
+
+                passage_counter += 1
+                suffix = f" (occurrence {occ_idx})" if len(occurrences) > 1 else ""
+                passages_text += f"[{passage_counter}] {title}{suffix}\n{full_passage}\n\n"
         
         if not passages_text:
             return {
@@ -223,6 +270,9 @@ async def process_question_original(
                 "predicted_answer": "Insufficient information.",
                 "answer_aliases": sample.get("answer_aliases", []),
                 "sf_titles": list(sf_info.keys()),
+                "sf_titles_injected": [],
+                "sf_titles_ambiguous_in_context": [],
+                "num_injected_passages": 0,
                 "success": False
             }
         
@@ -239,6 +289,9 @@ async def process_question_original(
             "predicted_answer": predicted,
             "answer_aliases": sample.get("answer_aliases", []),
             "sf_titles": list(sf_info.keys()),
+            "sf_titles_injected": injected_titles,
+            "sf_titles_ambiguous_in_context": ambiguous_titles,
+            "num_injected_passages": passage_counter,
             "success": True
         }
 
@@ -272,34 +325,40 @@ async def run_experiment_original(samples: list, prompt_mode: str):
 def load_metadata_db(db_path: str):
     """Load metadata from database"""
     import sqlite3
+    from collections import defaultdict
     
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
     
-    metadata_db = {}
+    # title -> list[{'doc_id': str|None, 'metadata': dict}]
+    metadata_db = defaultdict(list)
 
     # Support both current schema (doc_id/source_title/entity_title/metadata_json)
     # and legacy schema (title/metadata_json).
     try:
-        cursor.execute("SELECT source_title, entity_title, metadata_json FROM metadata")
+        cursor.execute("SELECT doc_id, source_title, entity_title, metadata_json FROM metadata")
         rows = cursor.fetchall()
-        for source_title, entity_title, metadata_json in rows:
+        for doc_id, source_title, entity_title, metadata_json in rows:
             meta = json.loads(metadata_json)
+            entry = {"doc_id": doc_id, "metadata": meta}
             # supporting_facts titles correspond to source_title in the dataset
-            if source_title and source_title not in metadata_db:
-                metadata_db[source_title] = meta
+            if source_title:
+                metadata_db[source_title].append(entry)
             # also index by entity_title as a fallback
-            if entity_title and entity_title not in metadata_db:
-                metadata_db[entity_title] = meta
+            if entity_title:
+                metadata_db[entity_title].append(entry)
     except Exception:
+        # legacy schema
         cursor.execute("SELECT title, metadata_json FROM metadata")
         rows = cursor.fetchall()
         for title, metadata_json in rows:
-            metadata_db[title] = json.loads(metadata_json)
+            meta = json.loads(metadata_json)
+            metadata_db[title].append({"doc_id": None, "metadata": meta})
     
     conn.close()
-    print(f"Loaded {len(metadata_db)} metadata entries from {db_path}")
-    return metadata_db
+    # Report unique title count, not row count
+    print(f"Loaded {len(metadata_db)} title keys from {db_path}")
+    return dict(metadata_db)
 
 
 def parse_args():
@@ -308,9 +367,11 @@ def parse_args():
     parser.add_argument('--dataset', type=str, default='hotpotqa',
                         choices=['hotpotqa', 'musique'],
                         help='Dataset to use (default: hotpotqa)')
-    parser.add_argument('--prompt', type=str, default='upper',
+    parser.add_argument('--prompt', type=str, default='final',
                         choices=['upper', 'final'],
                         help='Prompt mode: upper (legacy upper-bound prompt) or final (FINAL_ANSWER_SYNTHESIS_PROMPT)')
+    parser.add_argument('--max_questions', type=int, default=None,
+                        help='Limit number of questions (debug / quick rerun)')
     return parser.parse_args()
 
 
@@ -327,6 +388,8 @@ async def main():
     # Load samples
     with open(config['data_path'], "r", encoding="utf-8") as f:
         samples = json.load(f)
+    if args.max_questions is not None:
+        samples = samples[: max(0, args.max_questions)]
     print(f"Loaded {len(samples)} samples from {config['data_path']}")
     
     # Analyze hop distribution (for MuSiQue)

@@ -95,3 +95,41 @@ You can perform simple reasoning on the information.
 Provide only the answer (max 5 words). 
 ONLY respond "Insufficient information." if both sub-answers AND passages truly lack the needed information.
 """
+
+
+NAIVE_RAG_FINAL_ANSWER_PROMPT = """---Role---
+You are a retrieval-augmented assistant.
+
+---Goal---
+Read the Retrieved Passages to generate the correct answer to the Question.
+Use ONLY the given passages; do NOT use external knowledge.
+
+---Critical Instructions---
+1. Read ALL provided passages carefully
+2. Extract relevant facts from the passages
+3. If multiple passages are needed, combine them
+4. Perform simple reasoning if required (arithmetic, temporal logic, comparisons)
+
+---Target response length and format---
+- One-word or minimal-phrase answer (max 5 words).
+
+---Output Constraint (Strict)---
+- Output ONLY the answer text.
+- Do NOT include emojis, bullet points, or any extra commentary.
+
+---Response Rules---
+✓ Use ONLY the information provided in the passages
+✓ Answer must be short and concise
+✓ Answer language must match the Question language
+✗ Do NOT hallucinate or invent facts
+✗ ONLY respond "Insufficient information." if passages truly lack the needed information
+
+---Retrieved Passages---
+{{passages}}
+
+---Question---
+{{question}}
+
+---Answer---
+Provide only the answer (max 5 words).
+"""

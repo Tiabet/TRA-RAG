@@ -10,9 +10,10 @@ This is a CoT-adapted version: it uses Prompt/rag_qa_cot.py `prompt_template`
 
 Usage:
     python Analysis/upper_bound_experiment_hotpotqa_cot.py
+    python Analysis/upper_bound_experiment_hotpotqa_cot.py --max_questions 20
 
 Evaluation:
-    python evaluate_mrqa_cot.py Results/upper_bound_hotpotqa_original_results_cot.json
+    python evaluate_mrqa_cot.py Results/upper_bound_hotpotqa_original_results_cot_template.json
 """
 
 import argparse
@@ -23,6 +24,7 @@ import os
 import sys
 import time
 from pathlib import Path
+from typing import List, Tuple
 
 from dotenv import load_dotenv
 from openai import AsyncOpenAI
@@ -31,7 +33,9 @@ REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
-from Prompt.rag_qa_cot import prompt_template
+from llm_logger import init_logger, finalize_log, log_llm_call
+
+from Prompt.rag_qa_cot import prompt_template as RAG_QA_TEMPLATE
 
 load_dotenv()
 
@@ -44,20 +48,43 @@ MAX_TOKENS = 200
 DATASET = 'hotpotqa'
 CONFIG = {
     'data_path': 'HotpotQA/hotpotqa_sample_200.json',
-    'result_original_cot': 'Results/upper_bound_hotpotqa_original_results_cot.json',
+    'result_cot_template': 'Results/upper_bound_hotpotqa_original_results_cot_template.json',
+}
+
+VARIANT_RAG_QA_TEMPLATE = 'rag_qa_template'
+
+# Backward-compatible alias
+_ALIASES = {
+    'cot_template': VARIANT_RAG_QA_TEMPLATE,
 }
 
 
-def _build_rag_qa_cot_messages(prompt_user: str):
-    messages = copy.deepcopy(prompt_template)
+def _build_messages(prompt_user: str, template: List[dict]):
+    messages = copy.deepcopy(template)
     messages[-1]['content'] = prompt_user
     return messages
 
 
-async def call_llm_cot(client: AsyncOpenAI, prompt_user: str) -> str:
+def _format_chat_messages_for_log(messages: List[dict]) -> str:
+    parts: List[str] = []
+    for i, m in enumerate(messages, 1):
+        role = m.get('role', 'unknown')
+        content = m.get('content', '')
+        parts.append(f"--- message {i} ({role}) ---\n{content}")
+    return "\n\n".join(parts)
+
+
+def _build_prompt_user_cot_template(passages: List[Tuple[str, str]], question: str) -> str:
+    docs = ''
+    for title, text in passages:
+        docs += f"Wikipedia Title: {title}\n{text}\n"
+    return f"{docs}\n\nQuestion: {question}\nThought: "
+
+
+async def call_llm_cot(client: AsyncOpenAI, messages: List[dict]) -> str:
     response = await client.chat.completions.create(
         model=MODEL,
-        messages=_build_rag_qa_cot_messages(prompt_user),
+        messages=messages,
         temperature=0,
         max_tokens=MAX_TOKENS,
     )
@@ -68,6 +95,7 @@ async def process_question_original(
     client: AsyncOpenAI,
     sample: dict,
     semaphore: asyncio.Semaphore,
+    variant: str,
 ) -> dict:
     async with semaphore:
         question = sample["question"]
@@ -101,8 +129,39 @@ async def process_question_original(
                 "success": False,
             }
 
-        prompt_user = f"---Information---\n{passages_text}\n\n---Query---\n{question}"
-        predicted = await call_llm_cot(client, prompt_user)
+        passages_for_template: List[Tuple[str, str]] = []
+        for title, _sent_indices in sf_info.items():
+            if title not in context_dict:
+                continue
+            sentences = context_dict[title]
+            full_passage = "".join(sentences) if isinstance(sentences, list) else str(sentences)
+            full_passage = full_passage.strip()
+            if full_passage:
+                passages_for_template.append((title, full_passage))
+
+        if variant != VARIANT_RAG_QA_TEMPLATE:
+            raise ValueError(f"Unknown variant: {variant}")
+
+        prompt_user = _build_prompt_user_cot_template(passages_for_template, question)
+        messages = _build_messages(prompt_user, RAG_QA_TEMPLATE)
+        call_type = 'Upper Bound Original Passages (rag_qa_template)'
+
+        predicted = await call_llm_cot(client, messages)
+
+        full_prompt_for_log = _format_chat_messages_for_log(messages)
+
+        log_llm_call(
+            call_type=call_type,
+            input_text=full_prompt_for_log,
+            output_text=predicted,
+            context={
+                "dataset": DATASET,
+                "id": qid,
+                "num_sf_titles": len(sf_info),
+                "sf_titles": list(sf_info.keys()),
+                "prompt_variant": variant,
+            },
+        )
 
         return {
             "id": qid,
@@ -111,6 +170,7 @@ async def process_question_original(
             "predicted_answer": predicted,
             "answer_aliases": sample.get("answer_aliases", []),
             "sf_titles": list(sf_info.keys()),
+            "prompt_variant": variant,
             "success": True,
         }
 
@@ -118,6 +178,13 @@ async def process_question_original(
 def parse_args():
     parser = argparse.ArgumentParser(description='Upper Bound Experiments (HotpotQA) + CoT prompt')
     parser.add_argument('--max_questions', type=int, default=None, help='Limit number of questions (debug)')
+    parser.add_argument(
+        '--variant',
+        type=str,
+        default=VARIANT_RAG_QA_TEMPLATE,
+        choices=[VARIANT_RAG_QA_TEMPLATE, 'cot_template'],
+        help='Which CoT prompting variant to run',
+    )
     return parser.parse_args()
 
 
@@ -145,39 +212,49 @@ async def main():
 
     semaphore = asyncio.Semaphore(CONCURRENCY)
 
-    print("\n" + "=" * 60)
-    print("Experiment: Perfect Retrieval with ORIGINAL PASSAGES (CoT)")
-    print("=" * 60)
-    start_time = time.time()
-    tasks = [process_question_original(client, s, semaphore) for s in samples]
-    results_original = await asyncio.gather(*tasks)
-    time_original = time.time() - start_time
+    variant = _ALIASES.get(args.variant, args.variant)
 
-    with open(CONFIG['result_original_cot'], 'w', encoding='utf-8') as f:
+    print("\n" + "=" * 60)
+    print(f"Experiment: Perfect Retrieval with ORIGINAL PASSAGES ({variant})")
+    print("=" * 60)
+
+    start_time = time.time()
+    tasks = [process_question_original(client, s, semaphore, variant=variant) for s in samples]
+    results = await asyncio.gather(*tasks)
+    elapsed = time.time() - start_time
+
+    out_path = CONFIG['result_cot_template']
+    with open(out_path, 'w', encoding='utf-8') as f:
         json.dump(
             {
-                'experiment': f"{DATASET.upper()} Perfect Retrieval with Original Passages (CoT)",
+                'experiment': f"{DATASET.upper()} Perfect Retrieval with Original Passages ({variant})",
                 'dataset': DATASET,
                 'model': MODEL,
                 'prompt_mode': 'cot',
-                'total': len(results_original),
-                'time': time_original,
-                'results': results_original,
+                'prompt_variant': variant,
+                'total': len(results),
+                'time': elapsed,
+                'results': results,
             },
             f,
             ensure_ascii=False,
             indent=2,
         )
-    print(f"Experiment 2 completed in {time_original:.1f}s")
+    print(f"Saved: {out_path} ({elapsed:.1f}s)")
 
     print("\n" + "=" * 60)
     print("EXPERIMENTS COMPLETED")
     print("=" * 60)
     print(f"Results saved to:")
-    print(f"  - {CONFIG['result_original_cot']}")
+    print(f"  - {CONFIG['result_cot_template']}")
+
     print("\nRun evaluation:")
-    print(f"  python evaluate_mrqa_cot.py {CONFIG['result_original_cot']}")
+    print(f"  python evaluate_mrqa_cot.py {CONFIG['result_cot_template']}")
 
 
 if __name__ == '__main__':
-    asyncio.run(main())
+    init_logger()
+    try:
+        asyncio.run(main())
+    finally:
+        finalize_log()

@@ -6,8 +6,8 @@ Uses Query Decomposition to retrieve passages for sub-questions,
 then synthesizes the final answer using unique retrieved passages.
 
 Usage:
-    python NaiveRAG/NaiveRAG_passage_QD.py --dataset hotpotqa
-    python NaiveRAG/NaiveRAG_passage_QD.py --dataset musique
+    python NaiveRAG/NaiveRAG_passage_QD.py --dataset hotpotqa --k 5
+    python NaiveRAG/NaiveRAG_passage_QD.py --dataset musique --k 5
 """
 
 import asyncio
@@ -25,14 +25,14 @@ from NaiveRAG.naive_passage_retriever import NaivePassageRetriever
 from query_decomposition import decompose_query, substitute_answers
 from Prompt.answer import DETAILED_SUBQUESTION_ANSWERING_PROMPT
 from Prompt.subquestion_answering_prompt import FINAL_ANSWER_SYNTHESIS_PROMPT
-from llm_logger import log_llm_call, init_logger
+from llm_logger import log_llm_call, init_logger, finalize_log
 
-async def answer_subquestion(client, retriever, sq, decomposition, previous_context):
+async def answer_subquestion(client, retriever, sq, decomposition, previous_context, k: int):
     # Substitute placeholders
     actual_question = substitute_answers(sq.question, decomposition.subquestions)
     
-    # Retrieve Top-3
-    results = await retriever.search(actual_question, k=3)
+    # Retrieve Top-k (default: 5)
+    results = await retriever.search(actual_question, k=k)
     
     # Format passages
     passage_text = ""
@@ -79,7 +79,7 @@ async def answer_subquestion(client, retriever, sq, decomposition, previous_cont
     
     return answer, results
 
-async def process_question(client, retriever, item):
+async def process_question(client, retriever, item, k: int):
     question = item['question']
     
     # 1. Decompose
@@ -89,7 +89,7 @@ async def process_question(client, retriever, item):
     
     decomposition = decomposition_result['decomposition']
         
-    all_passages = {} # title -> text
+    all_passages = {} # title -> {text, best_score}
     
     # 2. Process Sub-questions
     for sq in decomposition.subquestions:
@@ -101,19 +101,25 @@ async def process_question(client, retriever, item):
                 if dep_sq and dep_sq.answer:
                     prev_context += f"Q: {dep_sq.question}\nA: {dep_sq.answer}\n\n"
         
-        answer, results = await answer_subquestion(client, retriever, sq, decomposition, prev_context)
+        answer, results = await answer_subquestion(client, retriever, sq, decomposition, prev_context, k=k)
         sq.answer = answer
         sq.retrieved_passages = results
         
-        # Collect passages
+        # Collect passages (keep best score per title)
         for res in results:
-            all_passages[res['title']] = res['text']
+            title = res['title']
+            score = float(res.get('score', 0.0))
+            if title not in all_passages or score > all_passages[title]['best_score']:
+                all_passages[title] = {'text': res['text'], 'best_score': score}
             
     # 3. Final Answer
-    # Format all unique passages
+    # Final Answer: use top-5 passages among those collected from sub-questions
+    ranked = sorted(all_passages.items(), key=lambda kv: kv[1]['best_score'], reverse=True)
+    top_passages = ranked[:5]
+
     unique_passages_text = ""
-    for i, (title, text) in enumerate(all_passages.items(), 1):
-        unique_passages_text += f"[{i}] {title}\n{text}\n\n"
+    for i, (title, payload) in enumerate(top_passages, 1):
+        unique_passages_text += f"[{i}] {title}\n{payload['text']}\n\n"
         
     # Format chain
     chain_text = ""
@@ -159,6 +165,7 @@ async def process_question(client, retriever, item):
 async def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--dataset', type=str, default='hotpotqa', choices=['hotpotqa', 'musique'])
+    parser.add_argument('--k', type=int, default=5, help='Number of passages to retrieve per sub-question (default: 5)')
     args = parser.parse_args()
     
     load_dotenv()
@@ -192,7 +199,7 @@ async def main():
         data = json.load(f)
         
     results = []
-    print(f"Processing {len(data)} questions with QD...")
+    print(f"Processing {len(data)} questions with QD (k={args.k})...")
     
     import time
     start_time = time.time()
@@ -201,7 +208,7 @@ async def main():
     batch_size = 50  # Adjust based on rate limits
     for i in range(0, len(data), batch_size):
         batch = data[i:i+batch_size]
-        tasks = [process_question(chat_client, retriever, item) for item in batch]
+        tasks = [process_question(chat_client, retriever, item, k=args.k) for item in batch]
         batch_results = await asyncio.gather(*tasks)
         results.extend(batch_results)
         print(f"Processed {min(i+batch_size, len(data))}/{len(data)}")
@@ -209,13 +216,14 @@ async def main():
     total_time = time.time() - start_time
     
     # Save Results
-    output_file = f'Results/NaiveRAG/NaiveRAG_passage_QD_{args.dataset}.json'
+    output_file = f'Results/NaiveRAG/NaiveRAG_passage_QD_{args.dataset}_k{args.k}.json'
     os.makedirs('Results/NaiveRAG', exist_ok=True)
     
     output = {
         'config': {
             'pipeline': 'NaiveRAG_QD',
             'dataset': args.dataset,
+            'k': args.k,
             'model': 'gpt-4o-mini'
         },
         'summary': {
@@ -230,6 +238,8 @@ async def main():
         json.dump(output, f, indent=2, ensure_ascii=False)
         
     print(f"Saved results to {output_file}")
+    log_path = finalize_log()
+    print(f"[LOG] {log_path}")
 
 if __name__ == "__main__":
     asyncio.run(main())

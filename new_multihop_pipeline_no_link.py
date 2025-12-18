@@ -53,7 +53,7 @@ class NewMultihopPipelineV3:
         client: AsyncOpenAI,
         retriever: HybridPathRetriever,
         hotpotqa_path: str = 'HotpotQA/hotpotqa_sample_200.json',
-        db_path: str = 'HotpotQA/metadata_v3.db',
+        db_path: str = 'HotpotQA/metadata_v4aligned.db',
         top_k: int = 3,
         verbose: bool = True
     ):
@@ -590,4 +590,10 @@ async def test_pipeline():
 
 
 if __name__ == "__main__":
-    asyncio.run(test_pipeline())
+    from llm_logger import init_logger, finalize_log
+
+    init_logger()
+    try:
+        asyncio.run(test_pipeline())
+    finally:
+        finalize_log()

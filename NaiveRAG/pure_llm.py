@@ -4,6 +4,7 @@ from openai import AsyncOpenAI
 from dotenv import load_dotenv
 import os
 from tqdm import tqdm
+from llm_logger import init_logger, finalize_log, log_llm_call
 
 # Load env
 load_dotenv()
@@ -49,6 +50,16 @@ async def ask_model(index, question):
 
         answer = response.choices[0].message.content.strip()
 
+        log_llm_call(
+            call_type="Pure LLM QA",
+            input_text=question,
+            output_text=answer,
+            context={
+                "index": index,
+                "model": "openai/gpt-4o-mini",
+            },
+        )
+
         return {
             "index": index,
             "query": question,
@@ -81,4 +92,8 @@ async def run_qa_test():
 
 
 if __name__ == "__main__":
-    asyncio.run(run_qa_test())
+    init_logger()
+    try:
+        asyncio.run(run_qa_test())
+    finally:
+        finalize_log()

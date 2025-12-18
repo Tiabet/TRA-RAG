@@ -30,13 +30,23 @@ from openai import AsyncOpenAI
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from NaiveRAG.naive_passage_retriever import NaivePassageRetriever
-from Prompt.rag_qa_cot import prompt_template
+from Prompt.rag_qa_cot import prompt_template as RAG_QA_TEMPLATE
+from llm_logger import init_logger, finalize_log, log_llm_call
 
 
-def _build_rag_qa_cot_messages(prompt_user: str):
-    messages = copy.deepcopy(prompt_template)
+COT_MAX_TOKENS = int(os.getenv("COT_MAX_TOKENS", "2048"))
+
+def _build_messages(prompt_user: str):
+    messages = copy.deepcopy(RAG_QA_TEMPLATE)
     messages[-1]["content"] = prompt_user
     return messages
+
+
+def _build_prompt_user_rag_qa_template(passages, question: str) -> str:
+    docs = ''
+    for title, text in passages:
+        docs += f"Wikipedia Title: {title}\n{text}\n"
+    return f"{docs}\n\nQuestion: {question}\nThought: "
 
 
 async def process_question(client, retriever, item, k):
@@ -47,19 +57,35 @@ async def process_question(client, retriever, item, k):
 
     # Format passages
     passage_text = ""
+    passages_for_template = []
     for i, res in enumerate(results, 1):
         passage_text += f"[{i}] {res['title']}\n{res['text']}\n\n"
+        passages_for_template.append((res['title'], res['text']))
 
-    prompt_user = f"---Information---\n{passage_text}\n\n---Query---\n{question}"
+    prompt_user = _build_prompt_user_rag_qa_template(passages_for_template, question)
+    messages = _build_messages(prompt_user)
+    call_type = "Answer Generation (NaiveRAG No_QD + rag_qa_template)"
 
     response = await client.chat.completions.create(
         model="openai/gpt-4o-mini",
-        messages=_build_rag_qa_cot_messages(prompt_user),
+        messages=messages,
         temperature=0.0,
-        max_tokens=200,
+        max_tokens=COT_MAX_TOKENS,
     )
 
     answer = response.choices[0].message.content.strip()
+
+    log_llm_call(
+        call_type=call_type,
+        input_text=prompt_user,
+        output_text=answer,
+        context={
+            "question": question,
+            "k": k,
+            "num_passages": len(results),
+            "passages": [r['title'] for r in results],
+        },
+    )
 
     return {
         "id": item.get("_id"),
@@ -73,11 +99,12 @@ async def process_question(client, retriever, item, k):
 
 async def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--k", type=int, default=10, help="Number of passages to retrieve")
+    parser.add_argument("--k", type=int, default=5, help="Number of passages to retrieve (fixed at 5 by default)")
     parser.add_argument("--dataset", type=str, default="hotpotqa", choices=["hotpotqa", "musique"])
     args = parser.parse_args()
 
     load_dotenv()
+    init_logger()
 
     if args.dataset == "hotpotqa":
         data_path = "HotpotQA/hotpotqa_sample_200.json"
@@ -103,7 +130,7 @@ async def main():
         data = json.load(f)
 
     results = []
-    print(f"Processing {len(data)} questions with K={args.k} (CoT)...")
+    print(f"Processing {len(data)} questions with K={args.k} (rag_qa_template)...")
 
     start_time = time.time()
 
@@ -126,6 +153,7 @@ async def main():
             "dataset": args.dataset,
             "k": args.k,
             "model": "gpt-4o-mini",
+            "prompt_variant": "rag_qa_template",
         },
         "summary": {
             "total_questions": len(data),
@@ -139,6 +167,8 @@ async def main():
         json.dump(output, f, indent=2, ensure_ascii=False)
 
     print(f"Saved results to {output_file}")
+    log_path = finalize_log()
+    print(f"[LOG] {log_path}")
 
 
 if __name__ == "__main__":
