@@ -56,14 +56,14 @@ DATASET_CONFIGS = {
             'db_path': 'HotpotQA/metadata_v5.db',
             'bm25_index': 'HotpotQA/bm25_index_v5',
             'embeddings': 'HotpotQA/path_embeddings_v5.npz',
-            'result_path': 'Results/test_hotpot_v11_200_results_v5.json',
+            'result_path': 'Results/test_hotpot_v11_200_results_v51.json',
         },
         'musique': {
             'data_path': 'MuSiQue/musique_sample_200_corpus_idx.json',
             'db_path': 'MuSiQue/metadata_v5.db',
             'bm25_index': 'MuSiQue/bm25_index_v5',
             'embeddings': 'MuSiQue/path_embeddings_v5.npz',
-            'result_path': 'Results/test_musique_v11_200_results_v5.json',
+            'result_path': 'Results/test_musique_v11_200_results_v51.json',
         },
     },
 }

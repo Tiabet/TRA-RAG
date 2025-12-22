@@ -366,6 +366,89 @@ def get_final_retrieved_doc_ids_at_k(result_item: Dict, k: int = 5, sources: str
     return set(ordered_unique)
 
 
+def get_final_retrieved_doc_ids_at_k_resolved_to_gold(
+    result_item: Dict,
+    gold_item: Dict,
+    k: int = 5,
+    sources: str = 'passages',
+) -> Set[str]:
+    """Extract final@k doc_ids, resolving legacy result doc_ids to gold doc_ids when possible.
+
+    This is primarily for comparing legacy MuSiQue/HotpotQA result files that store
+    doc_id as qid::ctxN (or other non-corpus identifiers) against gold corpora that
+    use corpus_idx.
+
+        Resolution strategy (passages only):
+            - If passage doc_id is already digits -> treat as corpus_idx.
+            - Else, map passage title -> gold paragraph/context corpus_idx/doc_id via gold_item.
+            - If still not resolvable, emit a stable UNMAPPED::<...> placeholder so the
+                passage still counts as a retrieved (non-gold) item for precision.
+
+    Note: This intentionally does NOT try to resolve path doc_ids (often lack titles).
+    """
+    title_to_gold_ids = _build_title_to_doc_ids(gold_item)
+
+    ordered: List[str] = []
+
+    def _push(v):
+        if v is None:
+            return
+        if isinstance(v, (int, float)):
+            ordered.append(str(v))
+            return
+        if isinstance(v, str) and v:
+            ordered.append(v)
+
+    if sources in ('passages', 'both'):
+        for p in (result_item.get('final_retrieved_passages') or []):
+            if isinstance(p, dict):
+                did = p.get('doc_id')
+                sid = str(did) if did is not None else ''
+                if sid.isdigit():
+                    _push(sid)
+                    continue
+                title = p.get('title')
+                if isinstance(title, str) and title:
+                    candidates = title_to_gold_ids.get(str(title), []) or []
+                    if candidates:
+                        # Keep 1:1 with passages (k passages -> k resolved ids)
+                        _push(candidates[0])
+                        continue
+                # Not resolvable: keep as a non-gold placeholder (counts for precision)
+                fallback_key = sid or (str(title) if title is not None else '')
+                _push(f"UNMAPPED::{fallback_key}")
+            else:
+                # If a bare string/int appears, keep it; resolution needs title.
+                _push(p)
+
+    if sources in ('paths', 'both'):
+        # Paths usually don't have titles; only accept numeric (corpus_idx-like) ids.
+        for p in (result_item.get('final_retrieved_paths') or []):
+            if isinstance(p, dict):
+                did = p.get('doc_id')
+            else:
+                did = p
+            if did is None:
+                continue
+            sid = str(did)
+            if sid.isdigit():
+                _push(sid)
+
+    # Preserve order but enforce uniqueness
+    seen = set()
+    ordered_unique: List[str] = []
+    for d in ordered:
+        ds = str(d)
+        if not ds or ds in seen:
+            continue
+        seen.add(ds)
+        ordered_unique.append(ds)
+        if len(ordered_unique) >= k:
+            break
+
+    return set(ordered_unique)
+
+
 def _analyze_title_uniqueness(gold_data: List[Dict]) -> Dict[str, int]:
     """Quick diagnostics to surface title ambiguity issues (esp. MuSiQue vs HotpotQA)."""
     per_item_ambiguous = 0
@@ -398,6 +481,7 @@ def evaluate(
     scope: str = 'final',
     at_k: int = 5,
     gold_id: str = 'doc_id',
+    resolve_result_doc_ids_to_gold: bool = False,
 ):
     results = load_json(result_path)
     gold_data = load_json(gold_path)
@@ -494,7 +578,7 @@ def evaluate(
     gold_doc_id_universe: Set[str] = set()
     doc_id_to_title: Dict[str, str] = {}
     if key == 'doc_id':
-        if gold_id == 'corpus_idx':
+        if effective_gold_id == 'corpus_idx':
             for item in gold_data:
                 # MuSiQue paragraphs
                 if isinstance(item.get('paragraphs'), list):
@@ -582,7 +666,15 @@ def evaluate(
             if scope == 'final':
                 if (res.get('final_retrieved_passages') is None) and (res.get('final_retrieved_paths') is None):
                     missing_final_fields += 1
-                retrieved_set = get_final_retrieved_doc_ids_at_k(res, k=at_k, sources=doc_id_sources)
+                if resolve_result_doc_ids_to_gold and effective_gold_id == 'corpus_idx':
+                    retrieved_set = get_final_retrieved_doc_ids_at_k_resolved_to_gold(
+                        res,
+                        gold_item,
+                        k=at_k,
+                        sources=doc_id_sources,
+                    )
+                else:
+                    retrieved_set = get_final_retrieved_doc_ids_at_k(res, k=at_k, sources=doc_id_sources)
             else:
                 retrieved_set = get_retrieved_doc_ids(res, sources=doc_id_sources)
 
@@ -631,7 +723,7 @@ def evaluate(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('--result_path', type=str, default ='Results/test_musique_v11_200_results_v5.json', help='Path to result JSON file')
+    parser.add_argument('--result_path', type=str, default ='Results/test_musique_v11_200_results_v51.json', help='Path to result JSON file')
     parser.add_argument('--gold_path', type=str, default='MuSiQue/musique_sample_200_corpus_idx.json', help='Path to gold dataset')
     # parser.add_argument('--gold_path', type=str, default='HotpotQA/hotpotqa_sample_200_corpus_idx.json', help='Path to gold dataset')
     parser.add_argument('--key', type=str, default='doc_id', choices=['doc_id', 'title'], help='Evaluation key')
@@ -641,6 +733,7 @@ if __name__ == "__main__":
     parser.add_argument('--scope', type=str, default='final', choices=['final', 'all'], help='Evaluate only final@k retrieval or union over all sub-questions')
     parser.add_argument('--at_k', type=int, default=5, help='k for final@k evaluation (only when --scope final and --key doc_id)')
     parser.add_argument('--gold_id', type=str, default='doc_id', choices=['doc_id', 'corpus_idx'], help='Gold doc_id scheme: legacy qid::ctxN or corpus_idx')
+    parser.add_argument('--resolve_result_doc_ids_to_gold', action='store_true', help='When --key doc_id and gold_id/corpus_idx, resolve legacy result doc_ids to gold ids using passage titles (MuSiQue paragraphs/context)')
     args = parser.parse_args()
 
     evaluate(
@@ -653,4 +746,5 @@ if __name__ == "__main__":
         scope=str(args.scope),
         at_k=int(args.at_k),
         gold_id=str(args.gold_id),
+        resolve_result_doc_ids_to_gold=bool(args.resolve_result_doc_ids_to_gold),
     )
