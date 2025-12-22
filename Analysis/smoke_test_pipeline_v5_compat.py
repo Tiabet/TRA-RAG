@@ -17,16 +17,43 @@ Notes:
 from __future__ import annotations
 
 import argparse
+import pathlib
 import os
 import sqlite3
+import sys
+from typing import Iterable
 
 import asyncio
+
+import numpy as np
+
+WORKSPACE_ROOT = pathlib.Path(__file__).resolve().parents[1]
+if str(WORKSPACE_ROOT) not in sys.path:
+    sys.path.insert(0, str(WORKSPACE_ROOT))
 
 from hybrid_path_retriever import HybridPathRetriever
 
 
 def _exists(path: str) -> bool:
     return os.path.exists(path)
+
+
+def _require_files(base_dir: str, files: Iterable[str]) -> None:
+    missing = [f for f in files if not _exists(os.path.join(base_dir, f))]
+    if missing:
+        raise SystemExit(f"Missing required files under {base_dir}: {missing}")
+
+
+def _check_npz(npz_path: str) -> None:
+    with np.load(npz_path, allow_pickle=True) as data:
+        keys = sorted(list(data.keys()))
+        print(f"NPZ keys: {keys}")
+        if "embeddings" in data:
+            print(f"embeddings shape/dtype: {data['embeddings'].shape} {data['embeddings'].dtype}")
+        if "doc_ids" in data:
+            doc_ids = data["doc_ids"]
+            print(f"doc_ids shape/dtype: {doc_ids.shape} {doc_ids.dtype}")
+            print(f"doc_ids sample: {list(doc_ids[:5])}")
 
 
 def _check_db(db_path: str) -> None:
@@ -91,6 +118,23 @@ def main() -> None:
 
     print("\n[DB check]")
     _check_db(db)
+
+    print("\n[Dense embeddings (npz) check]")
+    _check_npz(embeddings)
+
+    print("\n[BM25 index files check]")
+    _require_files(
+        bm25,
+        files=[
+            "data.csc.index.npy",
+            "indices.csc.index.npy",
+            "indptr.csc.index.npy",
+            "metadata.json",
+            "params.index.json",
+            "vocab.index.json",
+        ],
+    )
+    print("BM25 index files: OK")
 
     print("\n[Retriever check]")
     asyncio.run(_check_retriever(bm25, embeddings, query))
