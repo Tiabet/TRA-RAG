@@ -20,6 +20,7 @@ All LLM calls are logged via llm_logger.
 
 import asyncio
 import json
+import os
 import time
 import sqlite3
 from typing import Dict, List, Optional, Tuple
@@ -250,9 +251,10 @@ class NewMultihopPipelineV11PathsHint:
         seen_doc_ids = set()
         passages: List[Dict] = []
 
-        # Passages are selected from the top-scoring UNIQUE paths.
-        # This ties passage selection strictly to path scores.
-        sorted_paths_for_passages = sorted(top_paths, key=self._safe_score, reverse=True)
+        # Passages are selected from the top-scoring paths, deduplicated by doc_id.
+        # IMPORTANT: We scan more than just top_paths here to reliably fill top_k_passages
+        # when many high-score paths collapse to the same doc_id.
+        sorted_paths_for_passages = sorted(fetched_paths, key=self._safe_score, reverse=True)
         for path in sorted_paths_for_passages:
             if len(passages) >= top_k_passages:
                 break
@@ -370,8 +372,8 @@ class NewMultihopPipelineV11PathsHint:
             entity_title = p.get('entity_title') or p.get('title') or ''
             key_path = p.get('key_path', '')
             value = p.get('value', '')
-            if isinstance(value, str) and len(value) > 220:
-                value = value[:220] + "..."
+            if isinstance(value, str) and len(value) > 10000:
+                value = value[:10000] + "..."
             lines.append(
                 f"[{i}] source_title: {source_title} | entity_title: {entity_title}\n"
                 f"  {key_path}: {value}"
@@ -445,12 +447,12 @@ class NewMultihopPipelineV11PathsHint:
             max_tokens=150,
         )
 
-        answer = response.choices[0].message.content.strip()
+        answer_raw = (response.choices[0].message.content or '').strip()
 
         log_llm_call(
             call_type="Subquestion Answering (V11-PathsHint)",
             input_text=prompt,
-            output_text=answer,
+            output_text=answer_raw,
             context={
                 "question": question,
                 "main_query": main_query,
@@ -460,9 +462,9 @@ class NewMultihopPipelineV11PathsHint:
             },
         )
 
-        if answer.startswith("Answer:"):
-            answer = answer[7:].strip()
-        return answer
+        if answer_raw.startswith("Answer:"):
+            return answer_raw[7:].strip()
+        return answer_raw
 
     def _select_top_paths_and_passages_from_decomposition(
         self,
@@ -476,7 +478,9 @@ class NewMultihopPipelineV11PathsHint:
 
         top_path_passages: List[Dict] = []
         seen_doc_ids = set()
-        for p in top_paths:
+        # NOTE: Keep top_paths (TOP-N) as the *hint* set, but scan more paths to reliably
+        # fill top_passages_k unique passages when many paths map to the same doc_id.
+        for p in sorted_paths:
             if len(top_path_passages) >= top_passages_k:
                 break
             doc_id = p.get('doc_id')
@@ -549,12 +553,12 @@ class NewMultihopPipelineV11PathsHint:
             max_tokens=100,
         )
 
-        answer = response.choices[0].message.content.strip()
+        answer_raw = (response.choices[0].message.content or '').strip()
 
         log_llm_call(
             call_type="Final Answer Synthesis (V11-PathsHint)",
             input_text=prompt,
-            output_text=answer,
+            output_text=answer_raw,
             context={
                 "main_query": main_query,
                 "num_passages": len(top_path_passages),
@@ -563,9 +567,9 @@ class NewMultihopPipelineV11PathsHint:
             },
         )
 
-        if answer.startswith("Answer:"):
-            answer = answer[7:].strip()
-        return answer
+        if answer_raw.startswith("Answer:"):
+            return answer_raw[7:].strip()
+        return answer_raw
 
     async def answer_subquestion(
         self,
@@ -669,17 +673,18 @@ class NewMultihopPipelineV11PathsHint:
             return {
                 'success': True,
                 'final_answer': final_answer,
+                'predicted_answer': final_answer,
                 # Final-only retrieval artifacts (doc_id-based), for @k evaluation.
                 'final_retrieved_passages': [
                     {
-                        'doc_id': p.get('doc_id'),
+                        'doc_id': str(p.get('doc_id')) if p.get('doc_id') is not None else None,
                         'title': p.get('title'),
                     }
                     for p in (final_passages or [])
                 ],
                 'final_retrieved_paths': [
                     {
-                        'doc_id': p.get('doc_id'),
+                        'doc_id': str(p.get('doc_id')) if p.get('doc_id') is not None else None,
                     }
                     for p in (final_paths or [])
                 ],
@@ -743,5 +748,226 @@ async def _quick_smoke_test():
     finalize_log()
 
 
+def _default_artifact_paths(dataset: str) -> Dict[str, str]:
+    if dataset == 'musique':
+        return {
+            'data_path': 'MuSiQue/musique_sample_200_corpus_idx.json',
+            'db_path': 'MuSiQue/metadata_v5.db',
+            'bm25_index_path': 'MuSiQue/bm25_index_v5',
+            'embeddings_path': 'MuSiQue/path_embeddings_v5.npz',
+        }
+    if dataset == 'hotpot':
+        return {
+            'data_path': 'HotpotQA/hotpotqa_sample_200_corpus_idx.json',
+            'db_path': 'HotpotQA/metadata_v5.db',
+            'bm25_index_path': 'HotpotQA/bm25_index_v5',
+            'embeddings_path': 'HotpotQA/path_embeddings_v5.npz',
+        }
+    raise ValueError(f"Unknown dataset: {dataset}")
+
+
+def _json_default(obj):
+    """Best-effort JSON serializer for numpy scalars/arrays and other non-JSON types."""
+    # numpy (optional)
+    try:
+        import numpy as np  # type: ignore
+
+        if isinstance(obj, (np.integer,)):
+            return int(obj)
+        if isinstance(obj, (np.floating,)):
+            return float(obj)
+        if isinstance(obj, (np.ndarray,)):
+            return obj.tolist()
+    except Exception:
+        pass
+
+    # Generic scalar types that expose .item() (covers numpy-like objects)
+    if hasattr(obj, 'item'):
+        try:
+            return obj.item()
+        except Exception:
+            pass
+
+    # Fallback: string representation
+    return str(obj)
+
+
+async def run_small_batch(
+    dataset: str,
+    limit: int,
+    output_path: str,
+    data_path: str,
+    db_path: str,
+    bm25_index_path: str,
+    embeddings_path: str,
+    top_k_passages: int,
+    top_k_paths: int,
+    path_fetch_k: int,
+    verbose: bool,
+    no_llm: bool = False,
+) -> None:
+    from dotenv import load_dotenv
+    from llm_logger import init_logger, finalize_log
+
+    load_dotenv()
+    init_logger()
+
+    client = None
+    if not no_llm:
+        api_key = os.getenv('ALICE_OPENAI_KEY')
+        base_url = os.getenv('ALICE_CHAT_URL')
+        if not api_key or not base_url:
+            raise SystemExit(
+                "Missing env vars: ALICE_OPENAI_KEY and/or ALICE_CHAT_URL. "
+                "Set them (or put them in a .env file) before running the pipeline."
+            )
+        client = AsyncOpenAI(api_key=api_key, base_url=base_url)
+    retriever = HybridPathRetriever(
+        bm25_weight=0.4,
+        dense_weight=0.6,
+        bm25_index_path=bm25_index_path,
+        embeddings_path=embeddings_path,
+    )
+    pipeline = NewMultihopPipelineV11PathsHint(
+        client=client,  # type: ignore[arg-type]
+        retriever=retriever,
+        hotpotqa_path=data_path,
+        db_path=db_path,
+        top_k_passages=top_k_passages,
+        top_k_paths=top_k_paths,
+        path_fetch_k=path_fetch_k,
+        verbose=verbose,
+    )
+
+    with open(data_path, 'r', encoding='utf-8') as f:
+        gold = json.load(f)
+
+    results: List[Dict] = []
+    n = min(limit, len(gold))
+    print(f"[run_small_batch] dataset={dataset} examples={n} output={output_path}")
+    print(f"  data_path={data_path}")
+    print(f"  db_path={db_path}")
+    print(f"  bm25_index_path={bm25_index_path}")
+    print(f"  embeddings_path={embeddings_path}")
+
+    for i, item in enumerate(gold[:n], 1):
+        q = item.get('question', '')
+        item_id = item.get('_id') or item.get('id')
+        print(f"[{i}/{n}] id={item_id}")
+        if verbose:
+            print(f"Q: {q}")
+
+        if no_llm:
+            passages, paths = await pipeline.retrieve_for_query(q)
+            out = {
+                'success': True,
+                # For MRQA smoke validation, use gold answer as prediction.
+                'final_answer': item.get('answer', ''),
+                'predicted_answer': item.get('answer', ''),
+                'final_retrieved_passages': [
+                    {'doc_id': p.get('doc_id'), 'title': p.get('title')}
+                    for p in (passages or [])
+                ],
+                'final_retrieved_paths': [
+                    {'doc_id': p.get('doc_id')}
+                    for p in (paths or [])
+                ],
+                'decomposition': None,
+                'num_passages': len(passages or []),
+                'num_paths': len(paths or []),
+                'time': 0.0,
+            }
+        else:
+            out = await pipeline.process_question(q)
+
+        status = "OK" if out.get('success') else "FAIL"
+        t = out.get('time')
+        if isinstance(t, (int, float)):
+            print(f"  -> {status} ({t:.1f}s)")
+        else:
+            print(f"  -> {status}")
+        if (not out.get('success')) and out.get('error'):
+            print(f"  error: {out.get('error')}")
+
+        merged: Dict = {
+            'question': q,
+            'answer': item.get('answer'),
+            'answer_aliases': item.get('answer_aliases'),
+            '_id': item_id,
+            'id': item.get('id') or item_id,
+        }
+        merged.update(out)
+        if merged.get('predicted_answer') is None:
+            merged['predicted_answer'] = merged.get('final_answer', '')
+        results.append(merged)
+
+    pipeline.close()
+    finalize_log()
+
+    os.makedirs(os.path.dirname(output_path) or '.', exist_ok=True)
+    payload = {
+        'meta': {
+            'dataset': dataset,
+            'limit': n,
+            'artifact_paths': {
+                'data_path': data_path,
+                'db_path': db_path,
+                'bm25_index_path': bm25_index_path,
+                'embeddings_path': embeddings_path,
+            },
+            'top_k_passages': top_k_passages,
+            'top_k_paths': top_k_paths,
+            'path_fetch_k_input': path_fetch_k,
+        },
+        'results': results,
+    }
+    with open(output_path, 'w', encoding='utf-8') as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2, default=_json_default)
+    print(f"[OK] Wrote: {output_path}")
+
+
+def main():
+    import argparse
+
+    parser = argparse.ArgumentParser(description='Run v11 paths-as-hints pipeline on a small batch (v5 corpus_idx artifacts).')
+    parser.add_argument('--dataset', choices=['musique', 'hotpot'], required=True)
+    parser.add_argument('--limit', type=int, default=5)
+    parser.add_argument('--output', type=str, default='')
+    parser.add_argument('--data_path', type=str, default='')
+    parser.add_argument('--db_path', type=str, default='')
+    parser.add_argument('--bm25_index_path', type=str, default='')
+    parser.add_argument('--embeddings_path', type=str, default='')
+    parser.add_argument('--top_k_passages', type=int, default=5)
+    parser.add_argument('--top_k_paths', type=int, default=30)
+    parser.add_argument('--path_fetch_k', type=int, default=50)
+    parser.add_argument('--verbose', action='store_true')
+    parser.add_argument('--no_llm', action='store_true', help='Retrieval-only smoke run: skip LLM calls and use gold answers as predictions')
+    args = parser.parse_args()
+
+    defaults = _default_artifact_paths(args.dataset)
+    data_path = args.data_path or defaults['data_path']
+    db_path = args.db_path or defaults['db_path']
+    bm25_index_path = args.bm25_index_path or defaults['bm25_index_path']
+    embeddings_path = args.embeddings_path or defaults['embeddings_path']
+    output_path = args.output or f"Results/smoke_v11_{args.dataset}_v5_limit{int(args.limit)}.json"
+
+    asyncio.run(
+        run_small_batch(
+            dataset=str(args.dataset),
+            limit=int(args.limit),
+            output_path=str(output_path),
+            data_path=str(data_path),
+            db_path=str(db_path),
+            bm25_index_path=str(bm25_index_path),
+            embeddings_path=str(embeddings_path),
+            top_k_passages=int(args.top_k_passages),
+            top_k_paths=int(args.top_k_paths),
+            path_fetch_k=int(args.path_fetch_k),
+            verbose=bool(args.verbose),
+            no_llm=bool(args.no_llm),
+        )
+    )
+
+
 if __name__ == '__main__':
-    asyncio.run(_quick_smoke_test())
+    main()

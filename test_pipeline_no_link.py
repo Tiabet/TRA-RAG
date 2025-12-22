@@ -8,6 +8,8 @@ Usage:
     python test_pipeline_no_link.py                     # Default: HotpotQA
     python test_pipeline_no_link.py --dataset hotpotqa  # HotpotQA
     python test_pipeline_no_link.py --dataset musique   # MuSiQue
+    python test_pipeline_no_link.py --dataset hotpotqa --artifacts v5 --max_questions 5
+    python test_pipeline_no_link.py --dataset musique --artifacts v5 --max_questions 5
 """
 
 import asyncio
@@ -30,20 +32,40 @@ CONCURRENCY = 100
 
 # Dataset configurations
 DATASET_CONFIGS = {
-    'hotpotqa': {
-        'data_path': 'HotpotQA/hotpotqa_sample_200.json',
-        'db_path': 'HotpotQA/metadata_v4aligned.db',
-        'bm25_index': 'HotpotQA/bm25_index_v4aligned',
-        'embeddings': 'HotpotQA/path_embeddings_v4aligned.npz',
-        'result_path': 'Results/test_hotpot_v11_200_results_v4aligned.json',
+    # Legacy artifacts (title-based / v4aligned)
+    'v4aligned': {
+        'hotpotqa': {
+            'data_path': 'HotpotQA/hotpotqa_sample_200.json',
+            'db_path': 'HotpotQA/metadata_v4aligned.db',
+            'bm25_index': 'HotpotQA/bm25_index_v4aligned',
+            'embeddings': 'HotpotQA/path_embeddings_v4aligned.npz',
+            'result_path': 'Results/test_hotpot_v11_200_results_v4aligned.json',
+        },
+        'musique': {
+            'data_path': 'MuSiQue/musique_sample_200.json',
+            'db_path': 'MuSiQue/metadata_v4aligned.db',
+            'bm25_index': 'MuSiQue/bm25_index_v4aligned',
+            'embeddings': 'MuSiQue/path_embeddings_v4aligned.npz',
+            'result_path': 'Results/test_musique_v11_200_results_v4aligned.json',
+        },
     },
-    'musique': {
-        'data_path': 'MuSiQue/musique_sample_200.json',
-        'db_path': 'MuSiQue/metadata_v4aligned.db',
-        'bm25_index': 'MuSiQue/bm25_index_v4aligned',
-        'embeddings': 'MuSiQue/path_embeddings_v4aligned.npz',
-        'result_path': 'Results/test_musique_v11_200_results_v4aligned.json',
-    }
+    # v5 artifacts (corpus_idx/doc_id unified)
+    'v5': {
+        'hotpotqa': {
+            'data_path': 'HotpotQA/hotpotqa_sample_200_corpus_idx.json',
+            'db_path': 'HotpotQA/metadata_v5.db',
+            'bm25_index': 'HotpotQA/bm25_index_v5',
+            'embeddings': 'HotpotQA/path_embeddings_v5.npz',
+            'result_path': 'Results/test_hotpot_v11_200_results_v5.json',
+        },
+        'musique': {
+            'data_path': 'MuSiQue/musique_sample_200_corpus_idx.json',
+            'db_path': 'MuSiQue/metadata_v5.db',
+            'bm25_index': 'MuSiQue/bm25_index_v5',
+            'embeddings': 'MuSiQue/path_embeddings_v5.npz',
+            'result_path': 'Results/test_musique_v11_200_results_v5.json',
+        },
+    },
 }
 
 
@@ -149,6 +171,9 @@ def parse_args():
                         help='Dataset to use (default: hotpotqa)')
     parser.add_argument('--result_path', type=str, default=None,
                         help='Optional override for output results JSON path')
+    parser.add_argument('--artifacts', type=str, default='v5',
+                        choices=['v4aligned', 'v5'],
+                        help='Which artifact set to use (default: v4aligned)')
     parser.add_argument('--max_questions', type=int, default=None,
                         help='Optional limit for number of questions to run (useful for smoke tests)')
     parser.add_argument('--concurrency', type=int, default=CONCURRENCY,
@@ -161,7 +186,8 @@ async def run_test(args):
     
     # Get dataset config
     dataset = args.dataset.lower()
-    config = DATASET_CONFIGS[dataset]
+    artifact_set = args.artifacts
+    config = DATASET_CONFIGS[artifact_set][dataset]
     concurrency = args.concurrency
     pipeline_version = 'v11'
     
@@ -169,6 +195,7 @@ async def run_test(args):
     print(f"Multi-hop Pipeline {pipeline_version.upper()} Test - {dataset.upper()}")
     print("="*80)
     print(f"Dataset: {dataset}")
+    print(f"Artifacts: {artifact_set}")
     print(f"Concurrency: {concurrency}")
     print("Mode: Hybrid Retrieval + Original Passage Answering + Path Hints")
     print(f"Start time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
@@ -215,6 +242,10 @@ async def run_test(args):
 
     # Decide output file early so we can write incremental snapshots
     output_file = args.result_path or config['result_path']
+    if args.max_questions is not None and args.result_path is None:
+        # If we're running a smoke test, make the filename reflect it.
+        stem, ext = os.path.splitext(output_file)
+        output_file = f"{stem}_limit{int(args.max_questions)}{ext}"
     
     # Analyze hop distribution (for MuSiQue)
     if dataset == 'musique':

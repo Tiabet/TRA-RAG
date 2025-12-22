@@ -402,21 +402,77 @@ def evaluate(
     results = load_json(result_path)
     gold_data = load_json(gold_path)
 
+    # Heuristic: if gold data clearly supports corpus_idx (MuSiQue paragraphs or HotpotQA context dict)
+    # but the caller didn't set --gold_id corpus_idx, auto-switch to avoid silent mismatch.
+    effective_gold_id = gold_id
+    if key == 'doc_id' and gold_id == 'doc_id':
+        has_corpus_fields = False
+        for item in gold_data:
+            if not isinstance(item, dict):
+                continue
+            if isinstance(item.get('paragraphs'), list):
+                for p in item.get('paragraphs') or []:
+                    if isinstance(p, dict) and p.get('corpus_idx') is not None:
+                        has_corpus_fields = True
+                        break
+            if has_corpus_fields:
+                break
+            for c in item.get('context', []) or []:
+                if isinstance(c, dict) and c.get('corpus_idx') is not None:
+                    has_corpus_fields = True
+                    break
+            if has_corpus_fields:
+                break
+
+        # Check if results look like corpus_idx doc_ids (digits in final_retrieved_passages)
+        results_look_like_corpus = False
+        for r in results[: min(10, len(results))]:
+            if not isinstance(r, dict):
+                continue
+            frp = r.get('final_retrieved_passages') or []
+            for p in frp:
+                if isinstance(p, dict):
+                    did = p.get('doc_id')
+                else:
+                    did = p
+                if did is None:
+                    continue
+                s = str(did)
+                if s.isdigit():
+                    results_look_like_corpus = True
+                    break
+            if results_look_like_corpus:
+                break
+
+        # Auto-switch when it's very likely corpus_idx.
+        if has_corpus_fields and results_look_like_corpus:
+            effective_gold_id = 'corpus_idx'
+            print("[evaluate_retrieval][INFO] Auto-detected corpus_idx gold scheme. Setting gold_id=corpus_idx.")
+
     print("=" * 90)
     print("[evaluate_retrieval] Running evaluation")
     print(f"result_path: {result_path}")
     print(f"gold_path:   {gold_path}")
     print(f"key:         {key}")
     if key == 'doc_id':
-        print(f"gold_id:     {gold_id}")
+        print(f"gold_id:     {effective_gold_id}")
     print(f"scope:       {scope}{'@'+str(at_k) if (key=='doc_id' and scope=='final') else ''}")
     print(f"doc_id_sources: {doc_id_sources}")
     print("=" * 90)
     
-    # Create a map for gold data
-    gold_map = {item['_id']: item for item in gold_data}
-    # Also map by question text as fallback if ID is missing or different
-    gold_q_map = {item['question']: item for item in gold_data}
+    # Create robust maps for gold data.
+    # Some datasets use '_id' (HotpotQA), others use 'id' (MuSiQue).
+    gold_map: Dict[str, Dict] = {}
+    gold_q_map: Dict[str, Dict] = {}
+    for item in gold_data:
+        if not isinstance(item, dict):
+            continue
+        gid = item.get('_id') or item.get('id')
+        if gid is not None:
+            gold_map[str(gid)] = item
+        q = item.get('question')
+        if isinstance(q, str) and q:
+            gold_q_map[q] = item
     
     metrics = {
         'recall': [],
@@ -493,14 +549,17 @@ def evaluate(
     
     count = 0
     for res in results:
-        question = res['question']
+        if not isinstance(res, dict):
+            continue
+        question = res.get('question', '')
         
         # Find corresponding gold item
         gold_item = gold_q_map.get(question)
         if not gold_item:
             # Try finding by ID if available
-            if '_id' in res and res['_id'] in gold_map:
-                gold_item = gold_map[res['_id']]
+            rid = res.get('_id') or res.get('id')
+            if rid is not None and str(rid) in gold_map:
+                gold_item = gold_map[str(rid)]
         
         if not gold_item:
             # print(f"Warning: Gold item not found for question: {question[:50]}...")
@@ -513,7 +572,7 @@ def evaluate(
             else:
                 retrieved_set = get_retrieved_titles(res)
         else:
-            if gold_id == 'corpus_idx':
+            if effective_gold_id == 'corpus_idx':
                 gold_set, missing_titles, ambiguous_titles = get_gold_corpus_doc_ids(gold_item)
             else:
                 gold_set, missing_titles, ambiguous_titles = get_gold_doc_ids(gold_item)
@@ -572,9 +631,9 @@ def evaluate(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('--result_path', type=str, default ='Results/test_musique_v12_ragcot_results_v4aligned_v1.json', help='Path to result JSON file')
-    parser.add_argument('--gold_path', type=str, default='MuSiQue/musique_sample_200.json', help='Path to gold dataset')
-    # parser.add_argument('--gold_path', type=str, default='HotpotQA/hotpotqa_sample_200.json', help='Path to gold dataset')
+    parser.add_argument('--result_path', type=str, default ='Results/test_musique_v11_200_results_v5.json', help='Path to result JSON file')
+    parser.add_argument('--gold_path', type=str, default='MuSiQue/musique_sample_200_corpus_idx.json', help='Path to gold dataset')
+    # parser.add_argument('--gold_path', type=str, default='HotpotQA/hotpotqa_sample_200_corpus_idx.json', help='Path to gold dataset')
     parser.add_argument('--key', type=str, default='doc_id', choices=['doc_id', 'title'], help='Evaluation key')
     parser.add_argument('--check_mapping', action='store_true', help='Print title/doc_id mapping diagnostics')
     parser.add_argument('--resolve_titles_from_doc_id', action='store_true', help='When --key title, resolve titles using doc_id->title mapping from gold dataset')

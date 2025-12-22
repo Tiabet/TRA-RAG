@@ -308,10 +308,10 @@ if __name__ == "__main__":
     import argparse
     
     parser = argparse.ArgumentParser(description="LLM-based answer evaluation")
-    parser.add_argument('--pred', type=Path, default=Path('Results/test_hotpot_v12_ragcot_results_v4aligned.json'),
+    parser.add_argument('--pred', type=Path, default=Path('Results/test_musique_v11_200_results_v5.json'),
                        help='Path to predictions file')
-    # parser.add_argument('--gold', type=Path, default=Path('MuSiQue/musique_sample_200.json'),
-    parser.add_argument('--gold', type=Path, default=Path('HotpotQA/hotpotqa_sample_200.json'),
+    parser.add_argument('--gold', type=Path, default=Path('MuSiQue/musique_sample_200_corpus_idx.json'),
+    # parser.add_argument('--gold', type=Path, default=Path('HotpotQA/hotpotqa_sample_200_corpus_idx.json'),
                        help='Path to gold answers file')
     parser.add_argument('--model', type=str, default='openai/gpt-4o-mini',
                        help='OpenAI model to use for evaluation')
