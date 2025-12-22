@@ -141,7 +141,7 @@ async def decompose_query(
     try:
         # Format prompt
         formatted_prompt = QUERY_DECOMPOSITION_PROMPT.replace("__QUESTION__", query)
-        
+
         # Call LLM
         response = await client.chat.completions.create(
             model=model,
@@ -158,9 +158,9 @@ async def decompose_query(
             temperature=temperature,
             max_tokens=2048
         )
-        
+
         result_text = response.choices[0].message.content.strip()
-        
+
         # Log LLM interaction
         log_llm_call(
             call_type="Query Decomposition",

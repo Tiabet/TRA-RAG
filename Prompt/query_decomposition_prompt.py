@@ -8,280 +8,273 @@ NO reliance on gold decompositions or question type labels.
 Pure LLM-based reasoning decomposition.
 """
 
-QUERY_DECOMPOSITION_PROMPT = """You are an expert at analyzing complex multi-hop questions and breaking them into logical reasoning steps.
+QUERY_DECOMPOSITION_PROMPT = """You are a Query Decomposition module for multi-hop factoid QA.
 
-Your task: Decompose the given question into a sequence of simpler sub-questions that can be answered through step-by-step retrieval and reasoning.
+Your task: Decompose the given question into a STRICT set of atomic sub-questions
+that reconstruct the implicit reasoning graph (may be a DAG).
 
-# Core Principles
+This is NOT free-form reasoning.
+This is graph-faithful decomposition with minimal local justification.
 
-1. **Identify Reasoning Chain**: What information is needed at each step?
-2. **Atomic Sub-Questions**: Each sub-question should retrieve ONE specific piece of information
-3. **Clear Dependencies**: Mark which sub-questions depend on previous answers
-4. **Flexible Patterns**: Don't force predefined types - let the reasoning flow naturally
+────────────────────────
+CORE RULES (MANDATORY)
+────────────────────────
+1) Each sub-question must retrieve exactly ONE factual answer.
+2) Use ONLY previous sub-question answers via placeholders.
+3) Do NOT add extra hops. Do NOT skip required intermediate entities.
+4) Do NOT include explanation or summarization steps.
+5) The final answer to the original question MUST be the answer to the LAST sub-question.
+6) Independent discoveries may be produced in parallel and merged later.
 
-# Placeholder Syntax
+────────────────────────
+MINI-CoT (REASONING FIELD)
+────────────────────────
+Each sub-question MUST include a short "reasoning" field.
 
-Use **[SQ{N}_Answer]** to reference previous sub-question answers:
-- Example: "Who directed [SQ1_Answer]?"
-- Example: "Where was [SQ2_Answer] born?"
+Rules for reasoning:
+- 1 sentence only.
+- Explain WHY this sub-question is needed.
+- Do NOT include facts, answers, or world knowledge.
+- Do NOT reference anything beyond the question and prior answers.
 
-# Common Reasoning Patterns
+Good: "Need to identify the intermediate entity required for the next step."
+Bad: "Napoleon occupied Vienna in 1805."
 
-## Pattern 1: Property Chain (2-3 hops)
-"Where was the director of film X born?"
-→ SQ1: "Who directed film X?"
-→ SQ2: "Where was [SQ1_Answer] born?"
+────────────────────────
+PLACEHOLDERS
+────────────────────────
+Use [SQ{N}_Answer] to reference earlier answers.
 
-## Pattern 2: Parallel Comparison (2-3 hops)
-"Which came first, A or B?"
-→ SQ1: "When was A released?"
-→ SQ2: "When was B released?"
-→ SQ3: "Which is earlier: [SQ1_Answer] or [SQ2_Answer]?"
+────────────────────────
+QUESTION TYPE (COARSE TAGS — LOGGING ONLY)
+────────────────────────
+Include "question_type" as an ARRAY of 1–3 tags from:
+["bridge", "compositional", "comparison", "intersection", "temporal", "numeric", "boolean", "other"]
 
-## Pattern 3: Multi-Entity Reasoning (3-4 hops)
-"What is the relationship between A's property and B's property?"
-→ SQ1: "What is A's property P?"
-→ SQ2: "What is B's property Q?"
-→ SQ3: "What is the relationship between [SQ1_Answer] and [SQ2_Answer]?"
+IMPORTANT:
+- These tags are for descriptive logging only.
+- Do NOT use them to decide the decomposition structure.
 
-## Pattern 4: Nested Properties (3-4 hops)
-"What is the symbol of the team from the headquarters of company X?"
-→ SQ1: "Where is the headquarters of company X?"
-→ SQ2: "What team is from [SQ1_Answer]?"
-→ SQ3: "What is the symbol of [SQ2_Answer]?"
-
-## Pattern 5: Relationship Inference (2-3 hops)
-"Who is the father-in-law of person X?"
-→ SQ1: "Who is the spouse of person X?"
-→ SQ2: "Who is the father of [SQ1_Answer]?"
-
-## Pattern 6: Compositional Bridge-Compare (4+ hops)
-"Which film's director died earlier, A or B?"
-→ SQ1: "Who directed film A?"
-→ SQ2: "Who directed film B?"
-→ SQ3: "When did [SQ1_Answer] die?"
-→ SQ4: "When did [SQ2_Answer] die?"
-→ SQ5: "Which is earlier: [SQ3_Answer] or [SQ4_Answer]?"
-
-# Guidelines
-
-**Dependencies:**
-- Independent sub-questions: `"depends_on": []`
-- Sequential: `"depends_on": ["SQ1"]` or `"depends_on": ["SQ2"]`
-- Multiple deps: `"depends_on": ["SQ1", "SQ2"]` (when synthesizing)
-
-**Question Types** (for reference, not constraint):
-- "compositional": Property chains
-- "comparison": Parallel retrieval + compare
-- "inference": Relationship reasoning
-- "bridge": Sequential entity discovery
-- "mixed": Combination of above
-
-**Flexibility:**
-- Support 2-4 hop questions (or more if needed)
-- Don't force into rigid categories
-- Let the reasoning chain emerge naturally
-- Each sub-question should be simple enough for single-source retrieval
-
-# Output Format
-
+────────────────────────
+OUTPUT FORMAT (JSON ONLY)
+────────────────────────
 Return ONLY valid JSON:
-```json
+
 {
-  "question_type": "<descriptive type>",
-  "reasoning": "<brief explanation of decomposition strategy>",
+  "question_type": ["<tag1>", "<tag2>"],
   "subquestions": [
     {
       "id": "SQ1",
-      "question": "<simple, atomic sub-question>",
+      "question": "...",
       "depends_on": [],
-      "reasoning": "<why this sub-question is needed>"
-    },
-    {
-      "id": "SQ2",
-      "question": "<may use [SQ1_Answer] placeholder>",
-      "depends_on": ["SQ1"],
-      "reasoning": "<why this sub-question is needed>"
-    }
-  ]
-}
-```
-
-# Examples
-
-## Example 1: Property Chain
-Question: "Where was the director of film Doctor Krishna born?"
-
-{
-  "question_type": "compositional",
-  "reasoning": "Need to first identify the director, then find their birthplace.",
-  "subquestions": [
-    {
-      "id": "SQ1",
-      "question": "Who is the director of film Doctor Krishna?",
-      "depends_on": [],
-      "reasoning": "First identify the director of the film"
-    },
-    {
-      "id": "SQ2",
-      "question": "Where was [SQ1_Answer] born?",
-      "depends_on": ["SQ1"],
-      "reasoning": "Find the birthplace of the identified director"
+      "reasoning": "..."
     }
   ]
 }
 
-## Example 2: Nested Properties
-Question: "What body of water is by the headquarters location of Wipac?"
+No text outside JSON.
+
+────────────────────────
+6-SHOT EXAMPLES (MuSiQue Table-1 aligned)
+────────────────────────
+
+Example 1
+Question:
+Who succeeded the first President of Namibia?
 
 {
-  "question_type": "compositional",
-  "reasoning": "Need to find headquarters location first, then the nearby water body.",
+  "question_type": ["bridge", "compositional"],
   "subquestions": [
     {
       "id": "SQ1",
-      "question": "Where is the headquarters of Wipac?",
+      "question": "Who was the first President of Namibia?",
       "depends_on": [],
-      "reasoning": "Find the headquarters location"
+      "reasoning": "Need to identify the predecessor before finding the successor."
     },
     {
       "id": "SQ2",
-      "question": "What body of water is by [SQ1_Answer]?",
+      "question": "Who succeeded [SQ1_Answer]?",
       "depends_on": ["SQ1"],
-      "reasoning": "Find the water body near the headquarters location"
+      "reasoning": "Once the first president is known, we can ask who succeeded them."
     }
   ]
 }
 
-## Example 3: Multi-Hop with Multiple Entities
-Question: "What is the symbol of the Saints from the city where the headquarters of the manufacturer of McAfee's Benchmark called?"
+────────────────────────
+
+Example 2
+Question:
+What currency is used where Billy Giles died?
 
 {
-  "question_type": "compositional",
-  "reasoning": "Three-step chain: manufacturer → headquarters city → team symbol.",
+  "question_type": ["bridge", "compositional"],
   "subquestions": [
     {
       "id": "SQ1",
-      "question": "Who is the manufacturer of McAfee's Benchmark?",
+      "question": "At what location did Billy Giles die?",
       "depends_on": [],
-      "reasoning": "Identify the manufacturer"
+      "reasoning": "The currency depends on the location of death."
     },
     {
       "id": "SQ2",
-      "question": "Where is the headquarters of [SQ1_Answer]?",
+      "question": "What part of the UK is [SQ1_Answer] located in?",
       "depends_on": ["SQ1"],
-      "reasoning": "Find the headquarters city"
+      "reasoning": "The currency is determined at the regional level."
     },
     {
       "id": "SQ3",
-      "question": "What is the symbol of the Saints from [SQ2_Answer]?",
+      "question": "What is the unit of currency in [SQ2_Answer]?",
       "depends_on": ["SQ2"],
-      "reasoning": "Find the team symbol for that city's Saints"
+      "reasoning": "Once the region is known, its currency can be retrieved."
     }
   ]
 }
 
-## Example 4: Bridge-Comparison
-Question: "Which film has the director who died earlier, A Doctor's Diary or Wild Rovers?"
+────────────────────────
+
+Example 3
+Question:
+When was the first establishment that McDonaldization is named after open in the country Horndean is located?
 
 {
-  "question_type": "bridge_comparison",
-  "reasoning": "Need to find both directors, their death dates, then compare.",
+  "question_type": ["intersection", "temporal", "compositional"],
   "subquestions": [
     {
       "id": "SQ1",
-      "question": "Who is the director of A Doctor's Diary?",
+      "question": "What is McDonaldization named after?",
       "depends_on": [],
-      "reasoning": "Identify first film's director"
+      "reasoning": "We need the referenced establishment before asking about its opening."
     },
     {
       "id": "SQ2",
-      "question": "Who is the director of Wild Rovers?",
+      "question": "Which state is Horndean located in?",
       "depends_on": [],
-      "reasoning": "Identify second film's director"
+      "reasoning": "The country constraint comes from Horndean’s location."
     },
     {
       "id": "SQ3",
-      "question": "When did [SQ1_Answer] die?",
+      "question": "When did the first [SQ1_Answer] open in [SQ2_Answer]?",
+      "depends_on": ["SQ1", "SQ2"],
+      "reasoning": "With both the entity and country known, we can ask about the opening time."
+    }
+  ]
+}
+
+────────────────────────
+
+Example 4
+Question:
+When did Napoleon occupy the city where the mother of the woman who brought Louis XVI style to the court died?
+
+{
+  "question_type": ["bridge", "temporal", "compositional"],
+  "subquestions": [
+    {
+      "id": "SQ1",
+      "question": "Who brought Louis XVI style to the court?",
+      "depends_on": [],
+      "reasoning": "We must identify the woman referenced in the question."
+    },
+    {
+      "id": "SQ2",
+      "question": "Who is the mother of [SQ1_Answer]?",
       "depends_on": ["SQ1"],
-      "reasoning": "Find first director's death date"
+      "reasoning": "The city of death is determined by the mother."
+    },
+    {
+      "id": "SQ3",
+      "question": "In what city did [SQ2_Answer] die?",
+      "depends_on": ["SQ2"],
+      "reasoning": "Napoleon’s occupation is tied to the city where she died."
     },
     {
       "id": "SQ4",
-      "question": "When did [SQ2_Answer] die?",
-      "depends_on": ["SQ2"],
-      "reasoning": "Find second director's death date"
-    },
-    {
-      "id": "SQ5",
-      "question": "Which is earlier: [SQ3_Answer] or [SQ4_Answer]?",
-      "depends_on": ["SQ3", "SQ4"],
-      "reasoning": "Compare the two death dates to determine which director died earlier"
+      "question": "When did Napoleon occupy [SQ3_Answer]?",
+      "depends_on": ["SQ3"],
+      "reasoning": "Once the city is known, we can ask when it was occupied."
     }
   ]
 }
 
-## Example 5: Relationship Inference
-Question: "Who is the father-in-law of Elizabeth Somerset, Baroness Herbert?"
+────────────────────────
+
+Example 5
+Question:
+How many Germans live in the colonial holding in Aruba's continent that was governed by Prazeres's country?
 
 {
-  "question_type": "inference",
-  "reasoning": "Need to find her spouse first, then the spouse's father.",
+  "question_type": ["intersection", "numeric", "compositional"],
   "subquestions": [
     {
       "id": "SQ1",
-      "question": "Who is the husband of Elizabeth Somerset, Baroness Herbert?",
+      "question": "What continent is Aruba in?",
       "depends_on": [],
-      "reasoning": "Identify her spouse"
+      "reasoning": "The colonial holding is constrained by Aruba’s continent."
     },
     {
       "id": "SQ2",
-      "question": "Who is the father of [SQ1_Answer]?",
-      "depends_on": ["SQ1"],
-      "reasoning": "Find the father of the identified spouse, which is the father-in-law"
-    }
-  ]
-}
-
-## Example 6: Simple Comparison
-Question: "Are both Stephen R. Donaldson and Michael Moorcock science fiction writers?"
-
-{
-  "question_type": "comparison",
-  "reasoning": "Check each person independently, then verify both.",
-  "subquestions": [
-    {
-      "id": "SQ1",
-      "question": "Is Stephen R. Donaldson a science fiction writer?",
+      "question": "What country is Prazeres from?",
       "depends_on": [],
-      "reasoning": "Check first author"
-    },
-    {
-      "id": "SQ2",
-      "question": "Is Michael Moorcock a science fiction writer?",
-      "depends_on": [],
-      "reasoning": "Check second author"
+      "reasoning": "The governing country determines which colonial holding is relevant."
     },
     {
       "id": "SQ3",
-      "question": "Are both [SQ1_Answer] and [SQ2_Answer] true?",
+      "question": "Which colonial holding in [SQ1_Answer] was governed by [SQ2_Answer]?",
       "depends_on": ["SQ1", "SQ2"],
-      "reasoning": "Verify that BOTH are science fiction writers"
+      "reasoning": "We must identify the specific colonial holding."
+    },
+    {
+      "id": "SQ4",
+      "question": "How many Germans live in [SQ3_Answer]?",
+      "depends_on": ["SQ3"],
+      "reasoning": "Once the location is known, we can ask for the population count."
     }
   ]
 }
 
-# Now decompose this question
+────────────────────────
 
-Question: __QUESTION__
+Example 6
+Question:
+When did the people who captured Malakoff come to the region where Philipsburg is located?
 
-**Important:**
-- Return ONLY valid JSON
-- No explanation text outside the JSON
-- Use [SQ{N}_Answer] placeholders consistently
-- Make each sub-question atomic and retrievable
-- Support 2-4 hops (or more if needed)
-- Let the reasoning chain emerge naturally from the question structure
+{
+  "question_type": ["intersection", "temporal", "bridge"],
+  "subquestions": [
+    {
+      "id": "SQ1",
+      "question": "What is Philipsburg capital of?",
+      "depends_on": [],
+      "reasoning": "The region is determined by the political entity Philipsburg belongs to."
+    },
+    {
+      "id": "SQ2",
+      "question": "[SQ1_Answer] is located on what terrain feature?",
+      "depends_on": ["SQ1"],
+      "reasoning": "This identifies the broader region referenced in the question."
+    },
+    {
+      "id": "SQ3",
+      "question": "Who captured Malakoff?",
+      "depends_on": [],
+      "reasoning": "We need to know which people are being referred to."
+    },
+    {
+      "id": "SQ4",
+      "question": "When did the [SQ3_Answer] come to the [SQ2_Answer]?",
+      "depends_on": ["SQ2", "SQ3"],
+      "reasoning": "With both the people and region known, we can ask about the time."
+    }
+  ]
+}
 
-JSON Response:
+────────────────────────
+NOW DECOMPOSE THIS QUESTION
+────────────────────────
+
+Question:
+__QUESTION__
+
+Return ONLY valid JSON.
+
 """
