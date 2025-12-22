@@ -82,14 +82,70 @@ class NewMultihopPipelineV11PathsHint:
 
         passages_by_title: Dict[str, str] = {}
         passages_by_doc_id: Dict[str, Dict[str, str]] = {}
+
         for item in data:
-            sample_id = item.get('_id')
-            for ctx_idx, (title, sentences) in enumerate(item.get('context', [])):
-                full_text = ''.join(sentences).strip()
-                if title not in passages_by_title:
+            sample_id = item.get('_id') or item.get('id')
+
+            # MuSiQue-style corpus_idx paragraphs
+            if isinstance(item.get('paragraphs'), list):
+                paragraphs = item.get('paragraphs') or []
+                # Stable ordering if local_idx exists
+                def _pkey(p):
+                    if isinstance(p, dict) and p.get('local_idx') is not None:
+                        return int(p.get('local_idx'))
+                    return 10**9
+
+                for p in sorted([p for p in paragraphs if isinstance(p, dict)], key=_pkey):
+                    title = str(p.get('title') or '')
+                    text = str(p.get('paragraph_text') or '').strip()
+                    corpus_idx = p.get('corpus_idx')
+                    doc_id = str(corpus_idx) if corpus_idx is not None else None
+
+                    if title and title not in passages_by_title and text:
+                        passages_by_title[title] = text
+                    if doc_id and doc_id not in passages_by_doc_id and text:
+                        passages_by_doc_id[doc_id] = {"title": title, "text": text}
+                continue
+
+            # HotpotQA-style context
+            context = item.get('context', []) or []
+            for ctx_idx, c in enumerate(context):
+                title = None
+                sentences: List[str] = []
+                doc_id = None
+
+                if isinstance(c, list) and len(c) >= 2:
+                    title = str(c[0])
+                    s = c[1]
+                    if isinstance(s, list):
+                        sentences = [str(x) for x in s]
+                    else:
+                        sentences = [str(s)] if s else []
+                    if sample_id is not None:
+                        doc_id = f"{sample_id}::ctx{ctx_idx}"
+                elif isinstance(c, dict):
+                    title = str(c.get('title') or '')
+                    s = c.get('sentences')
+                    if isinstance(s, list):
+                        sentences = [str(x) for x in s]
+                    else:
+                        sentences = [str(s)] if s else []
+
+                    corpus_idx = c.get('corpus_idx')
+                    if corpus_idx is not None:
+                        doc_id = str(corpus_idx)
+                    elif sample_id is not None:
+                        # Fallback for legacy dict contexts
+                        local_idx = c.get('local_idx', ctx_idx)
+                        doc_id = f"{sample_id}::ctx{int(local_idx)}"
+
+                if not title:
+                    continue
+
+                full_text = ''.join(sentences).strip() if sentences else ''
+                if title not in passages_by_title and full_text:
                     passages_by_title[title] = full_text
-                if sample_id:
-                    doc_id = f"{sample_id}::ctx{ctx_idx}"
+                if doc_id and doc_id not in passages_by_doc_id and full_text:
                     passages_by_doc_id[str(doc_id)] = {"title": title, "text": full_text}
 
         return passages_by_title, passages_by_doc_id

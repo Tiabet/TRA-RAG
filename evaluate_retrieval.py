@@ -17,12 +17,38 @@ def get_gold_titles(item) -> Set[str]:
 
 def _build_title_to_doc_ids(item: Dict) -> Dict[str, List[str]]:
     mapping: Dict[str, List[str]] = {}
-    sample_id = item.get('_id')
-    if not sample_id:
+    sample_id = item.get('_id') or item.get('id')
+
+    # MuSiQue-style: paragraphs already have corpus_idx
+    if isinstance(item.get('paragraphs'), list):
+        for p in item.get('paragraphs') or []:
+            if not isinstance(p, dict):
+                continue
+            title = p.get('title')
+            corpus_idx = p.get('corpus_idx')
+            if title is None:
+                continue
+            if corpus_idx is not None:
+                mapping.setdefault(str(title), []).append(str(corpus_idx))
         return mapping
-    for ctx_idx, (title, _sentences) in enumerate(item.get('context', [])):
-        doc_id = f"{sample_id}::ctx{ctx_idx}"
-        mapping.setdefault(title, []).append(doc_id)
+
+    # HotpotQA-style: context can be list-based or dict-based
+    for ctx_idx, c in enumerate(item.get('context', []) or []):
+        if isinstance(c, list) and len(c) >= 1:
+            title = c[0]
+            doc_id = f"{sample_id}::ctx{ctx_idx}" if sample_id is not None else f"ctx{ctx_idx}"
+            mapping.setdefault(str(title), []).append(str(doc_id))
+        elif isinstance(c, dict):
+            title = c.get('title')
+            if title is None:
+                continue
+            corpus_idx = c.get('corpus_idx')
+            if corpus_idx is not None:
+                doc_id = str(corpus_idx)
+            else:
+                local_idx = c.get('local_idx', ctx_idx)
+                doc_id = f"{sample_id}::ctx{int(local_idx)}" if sample_id is not None else f"ctx{int(local_idx)}"
+            mapping.setdefault(str(title), []).append(str(doc_id))
     return mapping
 
 
@@ -46,6 +72,59 @@ def get_gold_doc_ids(item: Dict) -> Tuple[Set[str], Set[str], Set[str]]:
         if len(doc_ids) > 1:
             ambiguous_titles.add(title)
         gold_doc_ids.update(doc_ids)
+
+    return gold_doc_ids, missing_titles, ambiguous_titles
+
+
+def get_gold_corpus_doc_ids(item: Dict) -> Tuple[Set[str], Set[str], Set[str]]:
+    """Return (gold_corpus_doc_ids, missing_titles, ambiguous_titles) using corpus_idx IDs.
+
+    - MuSiQue: paragraphs[].is_supporting == True => use paragraphs[].corpus_idx
+    - HotpotQA: supporting_facts titles => map to context[].corpus_idx (can be many)
+
+    If corpus_idx fields are not found, falls back to legacy get_gold_doc_ids().
+    """
+
+    # MuSiQue-style
+    if isinstance(item.get('paragraphs'), list):
+        gold: Set[str] = set()
+        for p in item.get('paragraphs') or []:
+            if not isinstance(p, dict):
+                continue
+            if not p.get('is_supporting'):
+                continue
+            corpus_idx = p.get('corpus_idx')
+            if corpus_idx is None:
+                continue
+            gold.add(str(corpus_idx))
+        return gold, set(), set()
+
+    # HotpotQA-style: context dict with corpus_idx
+    has_any_corpus_idx = False
+    title_to_ids: Dict[str, List[str]] = {}
+    for c in item.get('context', []) or []:
+        if isinstance(c, dict):
+            title = c.get('title')
+            corpus_idx = c.get('corpus_idx')
+            if title is None or corpus_idx is None:
+                continue
+            has_any_corpus_idx = True
+            title_to_ids.setdefault(str(title), []).append(str(corpus_idx))
+
+    if not has_any_corpus_idx:
+        return get_gold_doc_ids(item)
+
+    gold_doc_ids: Set[str] = set()
+    missing_titles: Set[str] = set()
+    ambiguous_titles: Set[str] = set()
+    for title, _sent_idx in item.get('supporting_facts', []) or []:
+        ids = title_to_ids.get(str(title))
+        if not ids:
+            missing_titles.add(str(title))
+            continue
+        if len(ids) > 1:
+            ambiguous_titles.add(str(title))
+        gold_doc_ids.update(ids)
 
     return gold_doc_ids, missing_titles, ambiguous_titles
 
@@ -318,6 +397,7 @@ def evaluate(
     doc_id_sources: str = 'both',
     scope: str = 'final',
     at_k: int = 5,
+    gold_id: str = 'doc_id',
 ):
     results = load_json(result_path)
     gold_data = load_json(gold_path)
@@ -327,6 +407,8 @@ def evaluate(
     print(f"result_path: {result_path}")
     print(f"gold_path:   {gold_path}")
     print(f"key:         {key}")
+    if key == 'doc_id':
+        print(f"gold_id:     {gold_id}")
     print(f"scope:       {scope}{'@'+str(at_k) if (key=='doc_id' and scope=='final') else ''}")
     print(f"doc_id_sources: {doc_id_sources}")
     print("=" * 90)
@@ -356,20 +438,51 @@ def evaluate(
     gold_doc_id_universe: Set[str] = set()
     doc_id_to_title: Dict[str, str] = {}
     if key == 'doc_id':
+        if gold_id == 'corpus_idx':
+            for item in gold_data:
+                # MuSiQue paragraphs
+                if isinstance(item.get('paragraphs'), list):
+                    for p in item.get('paragraphs') or []:
+                        if not isinstance(p, dict):
+                            continue
+                        corpus_idx = p.get('corpus_idx')
+                        title = p.get('title')
+                        if corpus_idx is None:
+                            continue
+                        gold_doc_id_universe.add(str(corpus_idx))
+                        if title is not None:
+                            doc_id_to_title.setdefault(str(corpus_idx), str(title))
+                    continue
+
+                # HotpotQA context dict
+                for c in item.get('context', []) or []:
+                    if not isinstance(c, dict):
+                        continue
+                    corpus_idx = c.get('corpus_idx')
+                    title = c.get('title')
+                    if corpus_idx is None:
+                        continue
+                    gold_doc_id_universe.add(str(corpus_idx))
+                    if title is not None:
+                        doc_id_to_title.setdefault(str(corpus_idx), str(title))
+        else:
+            for item in gold_data:
+                sample_id = item.get('_id')
+                if not sample_id:
+                    continue
+                for ctx_idx, _ctx in enumerate(item.get('context', [])):
+                    gold_doc_id_universe.add(f"{sample_id}::ctx{ctx_idx}")
+
+    # Useful for resolving titles from doc_id when comparing legacy result files.
+    if not doc_id_to_title:
         for item in gold_data:
             sample_id = item.get('_id')
             if not sample_id:
                 continue
-            for ctx_idx, _ctx in enumerate(item.get('context', [])):
-                gold_doc_id_universe.add(f"{sample_id}::ctx{ctx_idx}")
-
-    # Useful for resolving titles from doc_id when comparing legacy result files.
-    for item in gold_data:
-        sample_id = item.get('_id')
-        if not sample_id:
-            continue
-        for ctx_idx, (title, _ctx) in enumerate(item.get('context', [])):
-            doc_id_to_title[f"{sample_id}::ctx{ctx_idx}"] = title
+            for ctx_idx, c in enumerate(item.get('context', []) or []):
+                if isinstance(c, list) and len(c) >= 1:
+                    title = c[0]
+                    doc_id_to_title[f"{sample_id}::ctx{ctx_idx}"] = str(title)
 
     missing_gold_items = 0
     missing_titles_total = 0
@@ -400,7 +513,10 @@ def evaluate(
             else:
                 retrieved_set = get_retrieved_titles(res)
         else:
-            gold_set, missing_titles, ambiguous_titles = get_gold_doc_ids(gold_item)
+            if gold_id == 'corpus_idx':
+                gold_set, missing_titles, ambiguous_titles = get_gold_corpus_doc_ids(gold_item)
+            else:
+                gold_set, missing_titles, ambiguous_titles = get_gold_doc_ids(gold_item)
             missing_titles_total += len(missing_titles)
             ambiguous_titles_total += len(ambiguous_titles)
 
@@ -465,6 +581,7 @@ if __name__ == "__main__":
     parser.add_argument('--doc_id_sources', type=str, default='passages', choices=['passages', 'paths', 'both'], help='When --key doc_id, which result fields to count')
     parser.add_argument('--scope', type=str, default='final', choices=['final', 'all'], help='Evaluate only final@k retrieval or union over all sub-questions')
     parser.add_argument('--at_k', type=int, default=5, help='k for final@k evaluation (only when --scope final and --key doc_id)')
+    parser.add_argument('--gold_id', type=str, default='doc_id', choices=['doc_id', 'corpus_idx'], help='Gold doc_id scheme: legacy qid::ctxN or corpus_idx')
     args = parser.parse_args()
 
     evaluate(
@@ -476,4 +593,5 @@ if __name__ == "__main__":
         doc_id_sources=str(args.doc_id_sources),
         scope=str(args.scope),
         at_k=int(args.at_k),
+        gold_id=str(args.gold_id),
     )

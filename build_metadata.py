@@ -5,7 +5,7 @@ LLM 기반 메타데이터 생성 스크립트
 
 Usage:
     # output 자동 생성 (입력 파일명_metadata.json)
-    python build_metadata.py -i HotpotQA/hotpotqa_sample_200.json
+    python build_metadata.py -i MuSiQue/musique_sample_200_corpus_idx.json
     
     # output 수동 지정
     python build_metadata.py -i HotpotQA/hotpotqa_sample_200.json -o metadata/hotpot_metadata.json
@@ -74,6 +74,12 @@ def parse_args():
         type=int,
         default=200,
         help="동시 처리 개수 (기본값: 200)"
+    )
+
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="LLM 호출 없이 입력 파싱/ID 매핑만 검증하고 더미 메타데이터를 생성합니다."
     )
     
     return parser.parse_args()
@@ -200,7 +206,8 @@ async def process_dataset(
     max_passages: int = None,
     batch_size: int = 10,
     concurrency: int = 5,
-    output_path: Path = None
+    output_path: Path = None,
+    dry_run: bool = False,
 ) -> List[Dict]:
     """
     데이터셋의 모든 passage에 대해 메타데이터 생성 (비동기 병렬 처리)
@@ -222,32 +229,191 @@ async def process_dataset(
     processed_passages = 0
     failed_passages = 0
     
-    # 전체 passage 수 계산 및 작업 목록 생성
-    # IMPORTANT: ctx_idx must be preserved so that downstream doc_id mapping stays stable.
-    tasks = []
+    def _extract_passages(item: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Return passages with a stable per-item ordering.
+
+        Supports:
+        - HotpotQA legacy: context = [[title, [sentences]], ...]
+        - HotpotQA corpus_idx: context = [{title, sentences, corpus_idx, local_idx}, ...]
+        - MuSiQue corpus_idx: paragraphs = [{title, paragraph_text, corpus_idx, local_idx, ...}, ...]
+        """
+        passages: List[Dict[str, Any]] = []
+
+        # 1) MuSiQue (preferred when present)
+        if isinstance(item.get("paragraphs"), list):
+            for i, p in enumerate(item.get("paragraphs") or []):
+                if not isinstance(p, dict):
+                    continue
+                title = str(p.get("title") or "")
+                text = str(p.get("paragraph_text") or "")
+                # We don't require sentence splitting; prompt accepts list[str].
+                sentences = [text] if text else []
+                corpus_idx = p.get("corpus_idx")
+                local_idx = p.get("local_idx", i)
+                passages.append({
+                    "title": title,
+                    "sentences": sentences,
+                    "ctx_idx": int(local_idx) if local_idx is not None else i,
+                    "doc_id": str(corpus_idx) if corpus_idx is not None else None,
+                })
+            # Ensure stable by ctx_idx
+            passages.sort(key=lambda x: int(x.get("ctx_idx", 0)))
+            return passages
+
+        # 2) HotpotQA (context)
+        context = item.get("context", []) or []
+        for i, c in enumerate(context):
+            if isinstance(c, list) and len(c) >= 2:
+                title = str(c[0])
+                sentences = c[1] if isinstance(c[1], list) else [str(c[1])]
+                passages.append({
+                    "title": title,
+                    "sentences": [str(s) for s in sentences],
+                    "ctx_idx": i,
+                    "doc_id": None,
+                })
+            elif isinstance(c, dict):
+                title = str(c.get("title") or "")
+                sentences = c.get("sentences")
+                if isinstance(sentences, list):
+                    sent_list = [str(s) for s in sentences]
+                else:
+                    sent_list = [str(sentences)] if sentences else []
+                corpus_idx = c.get("corpus_idx")
+                local_idx = c.get("local_idx", i)
+                passages.append({
+                    "title": title,
+                    "sentences": sent_list,
+                    "ctx_idx": int(local_idx) if local_idx is not None else i,
+                    "doc_id": str(corpus_idx) if corpus_idx is not None else None,
+                })
+
+        passages.sort(key=lambda x: int(x.get("ctx_idx", 0)))
+        return passages
+
+    # Build UNIQUE tasks keyed by doc_id when available (e.g., corpus_idx),
+    # while still keeping per-item ordering by ctx_idx.
+    tasks_by_key: Dict[str, Dict[str, Any]] = {}
     item_context_titles: Dict[str, List[str]] = {}
+    item_context_doc_ids: Dict[str, List[str]] = {}
+
+    unique_task_count = 0
     for item in data:
         item_id = item.get("_id") or item.get("id")
-        context = item.get("context", []) or []
-        if item_id and item_id not in item_context_titles:
-            item_context_titles[item_id] = [str(p[0]) for p in context if isinstance(p, list) and p]
-        for ctx_idx, passage in enumerate(context):
-            if max_passages and len(tasks) >= max_passages:
+        if not item_id:
+            continue
+
+        passages = _extract_passages(item)
+        item_context_titles[item_id] = [p.get("title", "") for p in passages]
+        # Fill doc_id list aligned with ctx_idx ordering; fallback to item-scoped doc_id if missing.
+        doc_ids_aligned: List[str] = []
+        for pi, p in enumerate(passages):
+            did = p.get("doc_id")
+            if did is None or str(did).strip() == "":
+                did = f"{item_id}::ctx{pi}"
+            doc_ids_aligned.append(str(did))
+        item_context_doc_ids[item_id] = doc_ids_aligned
+
+        for pi, p in enumerate(passages):
+            if max_passages and unique_task_count >= max_passages:
                 break
-            tasks.append({
+
+            # Use corpus_idx as key when provided; otherwise keep per-item unique id.
+            doc_id = p.get("doc_id")
+            if doc_id is None or str(doc_id).strip() == "":
+                doc_id = f"{item_id}::ctx{pi}"
+            doc_id = str(doc_id)
+
+            key = doc_id
+            if key not in tasks_by_key:
+                tasks_by_key[key] = {
+                    "doc_id": doc_id,
+                    "passage": [p.get("title", ""), p.get("sentences", [])],
+                    "refs": [],
+                }
+                unique_task_count += 1
+            tasks_by_key[key]["refs"].append({
                 "item": item,
-                "passage": passage,
-                "ctx_idx": ctx_idx,
-                "context_len": len(context),
+                "item_id": str(item_id),
+                "ctx_idx": int(pi),
+                "context_len": int(len(passages)),
+                "title": str(p.get("title", "")),
+                "doc_id": doc_id,
             })
-        if max_passages and len(tasks) >= max_passages:
+
+        if max_passages and unique_task_count >= max_passages:
             break
-    
+
+    tasks = list(tasks_by_key.values())
     total_passages = len(tasks)
     
     print(f"\n📊 처리 대상: {total_passages}개 passages")
     print(f"🤖 모델: {model}")
     print(f"⚡ 동시 처리: {concurrency}개\n")
+
+    if dry_run:
+        print("🧪 DRY RUN: LLM 호출 없이 doc_id/ctx_idx 매핑만 생성합니다.\n")
+
+        item_results: Dict[str, Dict[str, Any]] = {}
+
+        def _ensure_item(item_id: str, item: Dict[str, Any], context_len: int):
+            if item_id not in item_results:
+                item_results[item_id] = {
+                    "id": item_id,
+                    "question": item.get("question"),
+                    "answer": item.get("answer"),
+                    "context_metadata": [None] * context_len,
+                }
+
+        for task_info in tasks:
+            task_title = str((task_info.get("passage") or [""])[0])
+            task_doc_id = str(task_info.get("doc_id") or "")
+            for ref in task_info.get("refs", []) or []:
+                item = ref.get("item") or {}
+                item_id = str(ref.get("item_id"))
+                ctx_idx = int(ref.get("ctx_idx", 0))
+                context_len = int(ref.get("context_len", 0))
+                ref_doc_id = str(ref.get("doc_id") or task_doc_id)
+                _ensure_item(item_id, item, context_len)
+                item_results[item_id]["context_metadata"][ctx_idx] = {
+                    "title": task_title,
+                    "metadata": {},
+                    "ctx_idx": ctx_idx,
+                    "doc_id": ref_doc_id,
+                }
+
+        def _materialize_context_metadata(item_id: str) -> List[Dict[str, Any]]:
+            entry = item_results[item_id]
+            ctx_list = entry.get("context_metadata", [])
+            titles = item_context_titles.get(item_id, [])
+            doc_ids = item_context_doc_ids.get(item_id, [])
+            out: List[Dict[str, Any]] = []
+            for i, v in enumerate(ctx_list):
+                if v is not None:
+                    out.append(v)
+                    continue
+                title = titles[i] if i < len(titles) else ""
+                doc_id = doc_ids[i] if i < len(doc_ids) else f"{item_id}::ctx{i}"
+                out.append({
+                    "title": title,
+                    "error": "metadata missing (not processed)",
+                    "ctx_idx": i,
+                    "doc_id": doc_id,
+                })
+            return out
+
+        results: List[Dict[str, Any]] = []
+        for iid, ent in item_results.items():
+            ent_copy = dict(ent)
+            ent_copy["context_metadata"] = _materialize_context_metadata(iid)
+            results.append(ent_copy)
+
+        if output_path:
+            with open(output_path, "w", encoding="utf-8") as f:
+                json.dump(results, f, indent=2, ensure_ascii=False)
+            print(f"💾 DRY RUN 결과 저장: {output_path}")
+
+        return results
     
     # Semaphore로 동시 실행 개수 제한
     semaphore = asyncio.Semaphore(concurrency)
@@ -274,23 +440,25 @@ async def process_dataset(
     pbar = tqdm(total=total_passages, desc="메타데이터 생성")
     
     # 항목별로 결과 정리를 위한 딕셔너리
-    item_results = {}
+    item_results: Dict[str, Dict[str, Any]] = {}
 
     def _materialize_context_metadata(item_id: str) -> List[Dict[str, Any]]:
         entry = item_results[item_id]
         ctx_list = entry.get("context_metadata", [])
         titles = item_context_titles.get(item_id, [])
+        doc_ids = item_context_doc_ids.get(item_id, [])
         out: List[Dict[str, Any]] = []
         for i, v in enumerate(ctx_list):
             if v is not None:
                 out.append(v)
                 continue
             title = titles[i] if i < len(titles) else ""
+            doc_id = doc_ids[i] if i < len(doc_ids) else f"{item_id}::ctx{i}"
             out.append({
                 "title": title,
                 "error": "metadata missing (not processed)",
                 "ctx_idx": i,
-                "doc_id": f"{item_id}::ctx{i}",
+                "doc_id": doc_id,
             })
         return out
     
@@ -306,39 +474,43 @@ async def process_dataset(
         for coro in asyncio.as_completed(pending_tasks):
             task_info, result = await coro
             
-            item = task_info["item"]
-            item_id = item.get("_id") or item.get("id")
-            ctx_idx = int(task_info.get("ctx_idx", 0))
-            context_len = int(task_info.get("context_len", 0))
-            
-            # 항목별 결과 초기화
-            if item_id not in item_results:
-                item_results[item_id] = {
-                    "id": item_id,
-                    "question": item.get("question"),
-                    "answer": item.get("answer"),
-                    # Keep list indexed by ctx_idx to preserve stable ordering.
-                    "context_metadata": [None] * context_len,
-                }
-            
-            # 메타데이터 추가
-            if result["success"]:
-                item_results[item_id]["context_metadata"][ctx_idx] = {
-                    "title": result["title"],
-                    "metadata": result["metadata"],
-                    "ctx_idx": ctx_idx,
-                    "doc_id": f"{item_id}::ctx{ctx_idx}",
-                }
-            else:
-                item_results[item_id]["context_metadata"][ctx_idx] = {
-                    "title": result["title"],
-                    "error": result["error"],
-                    "raw_response": result.get("raw_response")
-                    ,
-                    "ctx_idx": ctx_idx,
-                    "doc_id": f"{item_id}::ctx{ctx_idx}",
-                }
-                failed_passages += 1
+            task_doc_id = str(task_info.get("doc_id") or "")
+
+            # A single task may correspond to many (item, ctx_idx) refs when doc_id is corpus_idx.
+            for ref in task_info.get("refs", []) or []:
+                item = ref.get("item") or {}
+                item_id = ref.get("item_id")
+                ctx_idx = int(ref.get("ctx_idx", 0))
+                context_len = int(ref.get("context_len", 0))
+                ref_doc_id = str(ref.get("doc_id") or task_doc_id)
+
+                # 항목별 결과 초기화
+                if item_id not in item_results:
+                    item_results[item_id] = {
+                        "id": item_id,
+                        "question": item.get("question"),
+                        "answer": item.get("answer"),
+                        # Keep list indexed by ctx_idx to preserve stable ordering.
+                        "context_metadata": [None] * context_len,
+                    }
+
+                # 메타데이터 추가
+                if result["success"]:
+                    item_results[item_id]["context_metadata"][ctx_idx] = {
+                        "title": result["title"],
+                        "metadata": result["metadata"],
+                        "ctx_idx": ctx_idx,
+                        "doc_id": ref_doc_id,
+                    }
+                else:
+                    item_results[item_id]["context_metadata"][ctx_idx] = {
+                        "title": result["title"],
+                        "error": result["error"],
+                        "raw_response": result.get("raw_response"),
+                        "ctx_idx": ctx_idx,
+                        "doc_id": ref_doc_id,
+                    }
+                    failed_passages += 1
             
             processed_passages += 1
             pbar.update(1)
@@ -404,6 +576,8 @@ def main():
     print(f"💾 출력: {output_path}")
     print(f"🤖 모델: {args.model}")
     print(f"⚡ 동시 처리: {args.concurrency}개")
+    if args.dry_run:
+        print(f"🧪 DRY RUN: 활성화")
     
     # 데이터 로드
     print(f"\n📖 데이터 로딩 중...")
@@ -411,10 +585,12 @@ def main():
         data = json.load(f)
     print(f"   ✅ {len(data)}개 항목 로드됨")
     
-    # LLM 클라이언트 초기화
-    print(f"\n🔧 LLM 클라이언트 초기화 중...")
-    client = initialize_llm_client()
-    print(f"   ✅ 클라이언트 초기화 완료")
+    client = None
+    if not args.dry_run:
+        # LLM 클라이언트 초기화
+        print(f"\n🔧 LLM 클라이언트 초기화 중...")
+        client = initialize_llm_client()
+        print(f"   ✅ 클라이언트 초기화 완료")
     
     # 메타데이터 생성 (비동기 실행)
     results = asyncio.run(process_dataset(
@@ -424,7 +600,8 @@ def main():
         max_passages=args.max_passages,
         batch_size=args.batch_size,
         concurrency=args.concurrency,
-        output_path=output_path
+        output_path=output_path,
+        dry_run=args.dry_run,
     ))
     
     # 최종 저장

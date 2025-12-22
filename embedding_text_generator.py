@@ -67,16 +67,22 @@ class EmbeddingTextGenerator:
                     continue
                 
                 relation_type = relation.get('relation', 'related_to')
-                
-                # Clean the whole relation object, but exclude 'relation' key from the value
-                value_dict = relation.copy()
-                if 'relation' in value_dict:
-                    del value_dict['relation']
-                
-                cleaned_value = self._clean_value(value_dict)
-                
-                # Add result (Relation type)
-                self._add_result(title, [relation_type], cleaned_value, results, is_relation=True)
+
+                # For relations only: if target is a list, emit one fact per target element.
+                target = relation.get('target', None)
+                if isinstance(target, list):
+                    for t in target:
+                        value_dict = relation.copy()
+                        value_dict.pop('relation', None)
+                        value_dict['target'] = t
+                        cleaned_value = self._clean_value(value_dict)
+                        self._add_result(title, [relation_type], cleaned_value, results, is_relation=True)
+                else:
+                    # Default behavior (single target / dict target)
+                    value_dict = relation.copy()
+                    value_dict.pop('relation', None)
+                    cleaned_value = self._clean_value(value_dict)
+                    self._add_result(title, [relation_type], cleaned_value, results, is_relation=True)
         
         # Extract top-level fields (excluding wrapper keys)
         skip_keys = {'title', 'attributes', 'relations', 'metadata'}
@@ -394,7 +400,14 @@ def generate_embedding_texts_from_json(
 
             metadata = meta_entry.get('metadata', meta_entry)
             entity_title = (metadata or {}).get('title') or source_title
-            doc_id = f"{qid}::ctx{ci}"
+            # Prefer doc_id provided by build_metadata (may be corpus_idx).
+            doc_id = meta_entry.get('doc_id')
+            if not doc_id:
+                ctx_idx = meta_entry.get('ctx_idx')
+                if ctx_idx is not None:
+                    doc_id = f"{qid}::ctx{int(ctx_idx)}"
+                else:
+                    doc_id = f"{qid}::ctx{ci}"
             
             # Extract embedding texts
             texts = generator.extract_embedding_texts(entity_title, metadata)
