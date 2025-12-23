@@ -308,7 +308,7 @@ if __name__ == "__main__":
     import argparse
     
     parser = argparse.ArgumentParser(description="LLM-based answer evaluation")
-    parser.add_argument('--pred', type=Path, default=Path('Results/test_musique_v11_200_results_v5.json'),
+    parser.add_argument('--pred', type=Path, default=Path('Results/test_musique_v11_200_results_v52_cot.json'),
                        help='Path to predictions file')
     parser.add_argument('--gold', type=Path, default=Path('MuSiQue/musique_sample_200_corpus_idx.json'),
     # parser.add_argument('--gold', type=Path, default=Path('HotpotQA/hotpotqa_sample_200_corpus_idx.json'),

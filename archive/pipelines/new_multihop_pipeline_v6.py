@@ -37,8 +37,10 @@ from query_decomposition import (
 from hybrid_path_retriever import HybridPathRetriever
 from llm_logger import log_llm_call, log_llm_error
 
-from Prompt.answer import DETAILED_SUBQUESTION_ANSWERING_PROMPT
-from Prompt.subquestion_answering_prompt import FINAL_ANSWER_SYNTHESIS_PROMPT
+from Prompt.answer_prompt import (
+    DETAILED_SUBQUESTION_ANSWERING_PROMPT,
+    FINAL_ANSWER_SYNTHESIS_PROMPT,
+)
 
 
 class MetadataLinkerV6:

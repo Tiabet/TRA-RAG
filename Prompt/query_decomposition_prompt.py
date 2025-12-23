@@ -75,7 +75,7 @@ Return ONLY valid JSON:
 No text outside JSON.
 
 ────────────────────────
-6-SHOT EXAMPLES (MuSiQue Table-1 aligned)
+6-SHOT EXAMPLES
 ────────────────────────
 
 Example 1

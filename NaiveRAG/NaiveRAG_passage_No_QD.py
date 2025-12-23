@@ -25,7 +25,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from NaiveRAG.naive_passage_retriever import NaivePassageRetriever
 from llm_logger import init_logger, finalize_log, log_llm_call
 
-from Prompt.subquestion_answering_prompt import NAIVE_RAG_FINAL_ANSWER_PROMPT
+from Prompt.answer_prompt import NAIVE_RAG_FINAL_ANSWER_PROMPT
 
 async def process_question(client, retriever, item, k):
     question = item['question']
@@ -65,13 +65,25 @@ async def process_question(client, retriever, item, k):
         },
     )
     
+    qid = item.get('_id') or item.get('id')
+
+    final_retrieved_passages = [
+        {
+            'doc_id': r.get('doc_id'),
+            'title': r.get('title'),
+            'score': r.get('score'),
+        }
+        for r in results
+    ]
+
     return {
-        'id': item.get('_id'),
+        'id': qid,
         'question': question,
         'gold_answer': item['answer'],
         'predicted_answer': answer,
         'answer_aliases': item.get('answer_aliases', []),
-        'retrieved_passages': [{'title': r['title']} for r in results]
+        'final_retrieved_passages': final_retrieved_passages,
+        'retrieved_passages': [{'doc_id': r.get('doc_id'), 'title': r.get('title')} for r in results],
     }
 
 async def main():
@@ -85,10 +97,10 @@ async def main():
     
     # Config
     if args.dataset == 'hotpotqa':
-        data_path = 'HotpotQA/hotpotqa_sample_200.json'
+        data_path = 'HotpotQA/hotpotqa_sample_200_corpus_idx.json'
         cache_path = 'HotpotQA/passage_embeddings_sample_200.npz'
     else:
-        data_path = 'MuSiQue/musique_sample_200.json'
+        data_path = 'MuSiQue/musique_sample_200_corpus_idx.json'
         cache_path = 'MuSiQue/passage_embeddings_sample_200.npz'
         
     # Chat Client (for answer generation)

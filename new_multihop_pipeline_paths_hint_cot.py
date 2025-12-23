@@ -1,20 +1,13 @@
 #!/usr/bin/env python3
 """\
-Multi-hop Pipeline (Paths-as-Hints + rag_qa_cot one-shot)
-=======================================================
+Multi-hop Pipeline (Paths-as-Hints)
+==================================
 
 Based on `new_multihop_pipeline_paths_hint.py` (v11 paths-as-hints), but:
 - Supports BOTH MuSiQue and HotpotQA dataset files.
-- Applies `Prompt/rag_qa_cot.py` one-shot chat prompt template to BOTH:
+- Uses Prompt/answer_prompt.py templates for:
     - sub-question answering
     - final main-query answering
-
-Notes:
-- Sub-question answering keeps dependency context (previous Q/A) and can include
-    path hints, but is formatted as rag_qa_cot docs + Question + Thought:.
-- Final answering prompt uses rag_qa_cot docs + Question + Thought: and:
-    - does NOT include previous context
-    - includes explicit instruction to use Metadata Paths (Hints)
 
 Output remains compatible with:
 - evaluate_retrieval.py (reads retrieved_passages titles)
@@ -25,7 +18,6 @@ All LLM calls are logged via llm_logger.
 """
 
 import asyncio
-import copy
 import json
 import os
 import sqlite3
@@ -43,12 +35,16 @@ from query_decomposition import (
 )
 from hybrid_path_retriever import HybridPathRetriever
 
-from Prompt.rag_qa_cot import fact_rag_qa_system, prompt_template_fact as RAG_QA_COT_PROMPT_TEMPLATE
+from Prompt.answer_prompt import (
+    DETAILED_SUBQUESTION_ANSWERING_PROMPT,
+    FINAL_SUBQUESTION_ANSWERING_PROMPT,
+    FINAL_ANSWER_SYNTHESIS_PROMPT,
+)
 
 from llm_logger import log_llm_call
 
 
-COT_MAX_TOKENS = int(os.getenv("COT_MAX_TOKENS", "2048"))
+COT_MAX_TOKENS = int(os.getenv("COT_MAX_TOKENS", "256"))
 
 
 def _extract_after_answer_marker(text: str) -> str:
@@ -73,7 +69,7 @@ def _extract_after_answer_marker(text: str) -> str:
 
 
 class NewMultihopPipelineV11PathsHintCoT:
-    """Pipeline using hybrid retrieval + original passages + top path hints (MuSiQue/HotpotQA) + rag_qa_cot one-shot."""
+    """Pipeline using hybrid retrieval + original passages + top path hints (MuSiQue/HotpotQA)."""
 
     def __init__(
         self,
@@ -93,8 +89,8 @@ class NewMultihopPipelineV11PathsHintCoT:
         self.db_path = db_path
         self.top_k_passages = top_k_passages
         self.top_k_paths = top_k_paths
-        # For top-30 UNIQUE paths, we often need to fetch much more than 30 due to duplicates.
-        self.path_fetch_k = max(path_fetch_k, top_k_paths * 10, top_k_passages * 10, 100)
+        # Keep the user-provided fetch_k; we will expand it per-call (same as non-CoT).
+        self.path_fetch_k = path_fetch_k
         self.verbose = verbose
         self.log_messages = log_messages
         self.dataset_name = dataset_name
@@ -233,18 +229,37 @@ class NewMultihopPipelineV11PathsHintCoT:
         - Passages are derived from the highest-scoring UNIQUE paths (doc_id) and deduplicated by doc_id.
         - Paths are deduplicated by (source_title, entity_title, key_path, value).
         """
+        return await self.retrieve_for_query_with_limits(
+            query=query,
+            top_k_passages=self.top_k_passages,
+            top_k_paths=self.top_k_paths,
+            path_fetch_k=self.path_fetch_k,
+        )
+
+    async def retrieve_for_query_with_limits(
+        self,
+        query: str,
+        top_k_passages: int,
+        top_k_paths: int,
+        path_fetch_k: int,
+    ) -> Tuple[List[Dict], List[Dict]]:
+        """Retrieve using explicit limits (mirrors non-CoT behavior)."""
+
+        # For top-30 UNIQUE paths, we often need to fetch much more than 30 due to duplicates.
+        fetch_k = max(path_fetch_k, top_k_paths * 10, top_k_passages * 10, 100)
+
         fetched_paths = await self.retriever.search_hybrid(
             query,
-            top_k=self.path_fetch_k,
-            bm25_candidates=max(50, self.path_fetch_k),
-            dense_candidates=max(50, self.path_fetch_k),
+            top_k=fetch_k,
+            bm25_candidates=max(50, fetch_k),
+            dense_candidates=max(50, fetch_k),
         )
 
         # 1) Pick top-k UNIQUE paths in ranked order
         seen_path_keys = set()
         top_paths: List[Dict] = []
         for p in fetched_paths:
-            if len(top_paths) >= self.top_k_paths:
+            if len(top_paths) >= top_k_paths:
                 break
             source_title = p.get('source_title') or p.get('title') or ''
             entity_title = p.get('entity_title') or p.get('title') or ''
@@ -259,9 +274,12 @@ class NewMultihopPipelineV11PathsHintCoT:
         # 2) Pick top-k unique passages derived from the top-scoring UNIQUE paths (doc_id-based).
         seen_doc_ids = set()
         passages: List[Dict] = []
-        sorted_paths_for_passages = sorted(top_paths, key=self._safe_score, reverse=True)
+
+        # IMPORTANT: Scan more than just top_paths to reliably fill top_k_passages
+        # when many high-score paths collapse to the same doc_id.
+        sorted_paths_for_passages = sorted(fetched_paths, key=self._safe_score, reverse=True)
         for path in sorted_paths_for_passages:
-            if len(passages) >= self.top_k_passages:
+            if len(passages) >= top_k_passages:
                 break
 
             doc_id = path.get('doc_id')
@@ -270,6 +288,10 @@ class NewMultihopPipelineV11PathsHintCoT:
             doc_id_str = str(doc_id)
             if doc_id_str in seen_doc_ids:
                 continue
+            seen_doc_ids.add(doc_id_str)
+
+            entity_title = path.get('entity_title') or path.get('title')
+            source_title = path.get('source_title') or entity_title
 
             original_passage = self.get_original_passage_by_doc_id(doc_id_str)
             if not original_passage:
@@ -277,10 +299,6 @@ class NewMultihopPipelineV11PathsHintCoT:
                     print(f"[WARN] No passage found for doc_id={doc_id_str} (during SQ passage selection)")
                 continue
 
-            seen_doc_ids.add(doc_id_str)
-
-            entity_title = path.get('entity_title') or path.get('title')
-            source_title = path.get('source_title') or entity_title
             title_from_doc = self.get_title_by_doc_id(doc_id_str)
             display_title = title_from_doc or str(source_title)
             metadata = self.get_full_metadata(str(entity_title), doc_id=doc_id_str)
@@ -404,7 +422,9 @@ class NewMultihopPipelineV11PathsHintCoT:
 
         top_path_passages: List[Dict] = []
         seen_doc_ids = set()
-        for p in top_paths:
+        # NOTE: Keep top_paths (TOP-N) as the *hint* set, but scan more paths to reliably
+        # fill top_passages_k unique passages when many paths map to the same doc_id.
+        for p in sorted_paths:
             if len(top_path_passages) >= top_passages_k:
                 break
             doc_id = p.get('doc_id')
@@ -440,8 +460,8 @@ class NewMultihopPipelineV11PathsHintCoT:
             entity_title = p.get('entity_title') or p.get('title') or ''
             key_path = p.get('key_path', '')
             value = p.get('value', '')
-            if isinstance(value, str) and len(value) > 220:
-                value = value[:220] + "..."
+            if isinstance(value, str) and len(value) > 10000:
+                value = value[:10000] + "..."
             lines.append(
                 f"[{i}] source_title: {source_title} | entity_title: {entity_title}\n"
                 f"  {key_path}: {value}"
@@ -480,37 +500,11 @@ class NewMultihopPipelineV11PathsHintCoT:
 
         return "\n\n".join(passage_texts)
 
-    @staticmethod
-    def _build_prompt_user_rag_qa_template(
-        passages: List[Tuple[str, str]],
-        question: str,
-        *,
-        facts_text: str = "",
-        previous_context_text: str = "",
-    ) -> str:
-        """Build user content matching Prompt/rag_qa_cot.py one-shot format.
-
-        Important formatting rules:
-        - Only REAL passages are formatted with `Wikipedia Title:`.
-        - Facts/hints and previous context are shown as explicit sections (no Wikipedia Title).
-        """
-
-        parts: List[str] = []
-        # Make the instruction visible in FULL PROMPT.
-        parts.append("---Instruction---\n" + fact_rag_qa_system.strip())
-        if previous_context_text and previous_context_text.strip():
-            parts.append("---Previous Context---\n" + previous_context_text.strip())
-
-        # Passages first (user request), then facts.
-        docs = ""
-        for title, text in passages:
-            docs += f"Wikipedia Title: {title}\n{text}\n"
-        parts.append(docs.strip())
-
-        if facts_text and facts_text.strip():
-            parts.append("---Facts---\n" + facts_text.strip())
-
-        return "\n\n".join([p for p in parts if p.strip()]) + f"\n\nQuestion: {question}\nThought: "
+    def _build_messages(self, prompt_user_text: str) -> List[Dict[str, str]]:
+        return [
+            {"role": "system", "content": "You are a precise question answering system."},
+            {"role": "user", "content": prompt_user_text},
+        ]
 
     async def generate_answer(
         self,
@@ -521,25 +515,25 @@ class NewMultihopPipelineV11PathsHintCoT:
         main_query: str,
         is_final_sq: bool = False,
     ) -> str:
-        # SQ answering: NO previous context (user request). Only passages + facts/hints.
-        docs: List[Tuple[str, str]] = []
-        for p in passages:
-            title = p.get('title') or ''
-            original = p.get('original_passage') or ''
-            docs.append((str(title), str(original)))
+        passages_text = self._format_passages_original(passages)
+        facts_text = self._format_paths_as_hints(top_paths) if top_paths else ""
 
-        facts_text = ""
-        if top_paths:
-            facts_text = self._format_paths_as_hints(top_paths)
-
-        user_content = self._build_prompt_user_rag_qa_template(
-            docs,
-            question,
-            facts_text=facts_text,
-            previous_context_text="",
+        combined_info = (
+            "---Top Retrieved Metadata Paths (STRONG HINTS)---\n"
+            "The paths below are strong hints for where the answer might be found. "
+            "Use them to focus your reading of the passages, but do NOT treat them as guaranteed truth.\n\n"
+            f"{facts_text}\n\n"
+            "---Top Passages from High-Score Paths (TOP-5 by doc_id)---\n"
+            f"{passages_text}"
         )
 
-        messages = self._build_rag_qa_cot_messages(user_content)
+        prompt_template = FINAL_SUBQUESTION_ANSWERING_PROMPT if is_final_sq else DETAILED_SUBQUESTION_ANSWERING_PROMPT
+        prompt = prompt_template.replace("{{subquestion}}", question)
+        prompt = prompt.replace("{{passages}}", combined_info)
+        prompt = prompt.replace("{{previous_context}}", previous_context if previous_context else "None")
+        prompt = prompt.replace("{{main_query}}", main_query)
+
+        messages = self._build_messages(prompt)
         response = await self.client.chat.completions.create(
             model="openai/gpt-4o-mini",
             messages=messages,
@@ -557,40 +551,20 @@ class NewMultihopPipelineV11PathsHintCoT:
             "num_passages": len(passages),
             "num_paths": len(top_paths),
         }
-        # Always include enough template info to verify one-shot/system/assistant messages.
         try:
             context["system_message"] = messages[0].get("content", "")
-            context["one_shot_user"] = messages[1].get("content", "")
-            context["one_shot_assistant"] = messages[2].get("content", "")
         except Exception:
             pass
         if self.log_messages:
             context["chat_messages"] = self._messages_for_log(messages)
 
         log_llm_call(
-            call_type=f"Subquestion Answering ({self.dataset_name}-V11-PathsHint + rag_qa_cot)",
-            input_text=user_content,
+            call_type=f"Subquestion Answering ({self.dataset_name}-V11-PathsHint)",
+            input_text=prompt,
             output_text=raw,
             context=context,
         )
         return answer
-
-    def _build_rag_qa_cot_messages(self, prompt_user_text: str) -> List[Dict[str, str]]:
-        """Render chat messages from `Prompt/rag_qa_cot.py` prompt_template.
-
-        We send the full one-shot template in a single request, and only replace
-        the final user placeholder (${prompt_user}).
-        """
-        messages = copy.deepcopy(RAG_QA_COT_PROMPT_TEMPLATE)
-        rendered = False
-        for msg in messages:
-            if msg.get('role') == 'user' and msg.get('content') == '${prompt_user}':
-                msg['content'] = prompt_user_text
-                rendered = True
-                break
-        if not rendered:
-            messages.append({"role": "user", "content": prompt_user_text})
-        return messages
 
     @staticmethod
     def _messages_for_log(messages: List[Dict[str, str]]) -> str:
@@ -614,23 +588,29 @@ class NewMultihopPipelineV11PathsHintCoT:
             top_passages_k=5,
         )
 
-        docs: List[Tuple[str, str]] = []
-        for p in top_path_passages:
-            title = p.get('title') or ''
-            original = p.get('original_passage') or ''
-            docs.append((str(title), str(original)))
+        chain_parts = []
+        for sq in decomposition.subquestions:
+            chain_parts.append(f"{sq.id}: {sq.question}")
+            chain_parts.append(f"Answer: {sq.answer if getattr(sq, 'answer', None) else '(Not answered)'}")
+            chain_parts.append("")
+        subquestion_chain = "\n".join(chain_parts).strip()
 
-        previous_context_text = self._build_all_subqa_context(decomposition)
-        facts_text = self._format_paths_as_hints(top_paths) if top_paths else ""
-
-        user_content = self._build_prompt_user_rag_qa_template(
-            docs,
-            main_query,
-            facts_text=facts_text,
-            previous_context_text=previous_context_text,
+        facts_text = self._format_paths_as_hints(top_paths) if top_paths else "(No paths.)"
+        top_path_passages_text = self._format_passages_original(top_path_passages)
+        combined_info = (
+            "---Top Retrieved Metadata Paths (TOP-30 by score, UNIQUE; reused from SQs)---\n"
+            "The paths below are strong hints for where the answer might be found. "
+            "Use them to focus your reading of the passages, but do NOT treat them as guaranteed truth.\n\n"
+            f"{facts_text}\n\n"
+            "---Top Passages from High-Score Paths (TOP-5 by doc_id)---\n"
+            f"{top_path_passages_text}"
         )
 
-        messages = self._build_rag_qa_cot_messages(user_content)
+        prompt = FINAL_ANSWER_SYNTHESIS_PROMPT.replace("{{main_question}}", main_query)
+        prompt = prompt.replace("{{subquestion_chain}}", subquestion_chain)
+        prompt = prompt.replace("{{passages}}", combined_info)
+
+        messages = self._build_messages(prompt)
 
         response = await self.client.chat.completions.create(
             model="openai/gpt-4o-mini",
@@ -650,16 +630,14 @@ class NewMultihopPipelineV11PathsHintCoT:
         }
         try:
             context["system_message"] = messages[0].get("content", "")
-            context["one_shot_user"] = messages[1].get("content", "")
-            context["one_shot_assistant"] = messages[2].get("content", "")
         except Exception:
             pass
         if self.log_messages:
             context["chat_messages"] = self._messages_for_log(messages)
 
         log_llm_call(
-            call_type=f"Final Answer Synthesis ({self.dataset_name}-V11-PathsHint + rag_qa_cot)",
-            input_text=user_content,
+            call_type=f"Final Answer Synthesis ({self.dataset_name}-V11-PathsHint)",
+            input_text=prompt,
             output_text=raw,
             context=context,
         )
@@ -674,8 +652,7 @@ class NewMultihopPipelineV11PathsHintCoT:
         try:
             actual_question = substitute_answers(sq.question, decomposition.subquestions)
             setattr(sq, 'actual_question', actual_question)
-            # SQ answering: previous context is intentionally NOT used (user request).
-            previous_context = ""
+            previous_context = self._build_simple_previous_context(sq, decomposition)
 
             passages, top_paths = await self.retrieve_for_query(actual_question)
 
@@ -769,17 +746,18 @@ class NewMultihopPipelineV11PathsHintCoT:
             return {
                 'success': True,
                 'final_answer': final_answer,
+                'predicted_answer': final_answer,
                 # Final-only retrieval artifacts (doc_id-based), for @k evaluation.
                 'final_retrieved_passages': [
                     {
-                        'doc_id': p.get('doc_id'),
+                        'doc_id': str(p.get('doc_id')) if p.get('doc_id') is not None else None,
                         'title': p.get('title'),
                     }
                     for p in (final_passages or [])
                 ],
                 'final_retrieved_paths': [
                     {
-                        'doc_id': p.get('doc_id'),
+                        'doc_id': str(p.get('doc_id')) if p.get('doc_id') is not None else None,
                     }
                     for p in (final_paths or [])
                 ],

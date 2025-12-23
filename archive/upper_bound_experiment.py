@@ -28,7 +28,7 @@ REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
-from Prompt.subquestion_answering_prompt import FINAL_ANSWER_SYNTHESIS_PROMPT
+from Prompt.answer_prompt import FINAL_ANSWER_SYNTHESIS_PROMPT
 
 load_dotenv()
 

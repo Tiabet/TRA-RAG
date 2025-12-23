@@ -2,7 +2,7 @@ import os
 import json
 import numpy as np
 import asyncio
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Optional
 from openai import AsyncOpenAI
 
 class NaivePassageRetriever:
@@ -19,75 +19,123 @@ class NaivePassageRetriever:
         self.model = model
         
         # Load passages
-        self.passages = self._load_passages()
-        self.titles = list(self.passages.keys())
-        self.texts = list(self.passages.values())
+        self.passage_records = self._load_passage_records()
+        self.doc_ids = [r["doc_id"] for r in self.passage_records]
+        self.titles = [r["title"] for r in self.passage_records]
+        self.texts = [r["text"] for r in self.passage_records]
         
         # Load or generate embeddings
         self.embeddings = self._load_or_generate_embeddings()
         
-    def _load_passages(self) -> Dict[str, str]:
-        """Load all unique passages from the dataset."""
+    def _load_passage_records(self) -> List[Dict[str, str]]:
+        """Load all unique passages from the dataset.
+
+        Supported formats:
+          - HotpotQA corpus_idx: items[].context[] is dict with {title, sentences, corpus_idx}
+          - MuSiQue corpus_idx: items[].paragraphs[] is dict with {title, paragraph_text, corpus_idx}
+        """
         print(f"Loading passages from {self.data_path}...")
         with open(self.data_path, 'r', encoding='utf-8') as f:
             data = json.load(f)
-            
-        passages = {}
-        for item in data:
-            for title, sentences in item.get('context', []):
-                if title not in passages:
-                    # Format: Title + Content
-                    content = "".join(sentences)
-                    passages[title] = f"{title}\n{content}"
-        print(f"Loaded {len(passages)} unique passages.")
-        return passages
 
-    def _load_or_generate_embeddings(self) -> np.ndarray:
-        """Load embeddings from cache or generate them."""
-        if os.path.exists(self.embedding_cache_path):
-            print(f"Loading embeddings from {self.embedding_cache_path}...")
-            data = np.load(self.embedding_cache_path)
-            # Verify consistency
-            if len(data['titles']) != len(self.titles):
-                print("Cache mismatch! Regenerating...")
-            else:
+        # Build unique-by-doc_id (corpus_idx) passages.
+        by_doc_id: Dict[str, Dict[str, str]] = {}
+        for item in data or []:
+            if not isinstance(item, dict):
+                continue
+
+            # MuSiQue-style
+            paragraphs = item.get('paragraphs')
+            if isinstance(paragraphs, list):
+                for p in paragraphs:
+                    if not isinstance(p, dict):
+                        continue
+                    corpus_idx = p.get('corpus_idx')
+                    title = p.get('title')
+                    text = p.get('paragraph_text') or p.get('text')
+                    if corpus_idx is None or title is None or text is None:
+                        continue
+                    doc_id = str(corpus_idx)
+                    if doc_id in by_doc_id:
+                        continue
+                    by_doc_id[doc_id] = {
+                        'doc_id': doc_id,
+                        'title': str(title),
+                        'text': f"{title}\n{text}",
+                    }
+                continue
+
+            # HotpotQA-style
+            context = item.get('context')
+            if isinstance(context, list):
+                for c in context:
+                    if not isinstance(c, dict):
+                        # legacy list-based context is no longer expected here
+                        continue
+                    corpus_idx = c.get('corpus_idx')
+                    title = c.get('title')
+                    sentences = c.get('sentences')
+                    if corpus_idx is None or title is None or sentences is None:
+                        continue
+                    if not isinstance(sentences, list):
+                        continue
+                    doc_id = str(corpus_idx)
+                    if doc_id in by_doc_id:
+                        continue
+                    content = "".join([str(s) for s in sentences])
+                    by_doc_id[doc_id] = {
+                        'doc_id': doc_id,
+                        'title': str(title),
+                        'text': f"{title}\n{content}",
+                    }
+
+        records = list(by_doc_id.values())
+        # Stable order: doc_id numeric ascending when possible
+        def _sort_key(r: Dict[str, str]):
+            s = r.get('doc_id', '')
+            return (0, int(s)) if s.isdigit() else (1, s)
+
+        records.sort(key=_sort_key)
+        print(f"Loaded {len(records)} unique passages.")
+        return records
+
+    def _load_or_generate_embeddings(self) -> Optional[np.ndarray]:
+        """Load embeddings from cache if compatible; otherwise return None.
+
+        Embedding generation is handled in `initialize()`.
+        """
+        if not os.path.exists(self.embedding_cache_path):
+            return None
+
+        print(f"Loading embeddings from {self.embedding_cache_path}...")
+        data = np.load(self.embedding_cache_path)
+
+        # New caches store doc_ids + titles; older caches may store only titles.
+        cached_titles = list(data.get('titles', []))
+        cached_doc_ids = list(data.get('doc_ids', []))
+
+        if cached_doc_ids:
+            if len(cached_doc_ids) == len(self.doc_ids) and all(str(a) == str(b) for a, b in zip(cached_doc_ids, self.doc_ids)):
                 return data['embeddings']
-        
-        # Generate embeddings
-        print("Generating embeddings (this may take a while)...")
-        # We need to run async generation in a sync method, or change init to async factory
-        # For simplicity, we'll use asyncio.run if no loop is running, or just assume the caller handles it?
-        # Actually, since __init__ is sync, we should probably do this lazily or use a helper.
-        # But for a script, we can just run it here.
-        
-        try:
-            loop = asyncio.get_running_loop()
-            # If we are in a loop, we can't use run_until_complete. 
-            # But this class is likely initialized inside an async main.
-            # So we should probably make an async initialize method.
-            # For now, let's assume we can block or use a separate runner if needed.
-            # But wait, calling async from sync init is bad.
-            # Let's make a static factory or just run it synchronously using a fresh loop if possible, 
-            # but since we are likely in an async main, we should expose an async setup method.
-            pass
-        except RuntimeError:
-            pass
+            print("Cache mismatch (doc_ids)! Regenerating...")
+            return None
 
-        # To keep it simple for the user scripts, let's do the generation in a separate async method `initialize`.
-        return None 
+        # Back-compat: accept title-only caches only when titles exactly match.
+        if cached_titles and len(cached_titles) == len(self.titles) and all(str(a) == str(b) for a, b in zip(cached_titles, self.titles)):
+            return data['embeddings']
+        print("Cache mismatch (titles)! Regenerating...")
+        return None
 
     async def initialize(self):
         """Async initialization to handle embedding generation."""
         if self.embeddings is not None:
             return
 
-        if os.path.exists(self.embedding_cache_path):
-            print(f"Loading embeddings from {self.embedding_cache_path}...")
-            data = np.load(self.embedding_cache_path)
-            if len(data['titles']) == len(self.titles):
-                self.embeddings = data['embeddings']
-                return
-            print("Cache mismatch! Regenerating...")
+        # Try loading again (in case init-time load was skipped)
+        loaded = self._load_or_generate_embeddings()
+        if loaded is not None:
+            self.embeddings = loaded
+            return
 
         print(f"Generating embeddings for {len(self.texts)} passages...")
         embeddings = []
@@ -110,7 +158,7 @@ class NaivePassageRetriever:
         self.embeddings = np.array(embeddings, dtype=np.float32)
         
         # Save to cache
-        np.savez(self.embedding_cache_path, embeddings=self.embeddings, titles=self.titles)
+        np.savez(self.embedding_cache_path, embeddings=self.embeddings, titles=self.titles, doc_ids=self.doc_ids)
         print(f"Saved embeddings to {self.embedding_cache_path}")
 
     async def search(self, query: str, k: int = 5) -> List[Dict]:
@@ -136,6 +184,7 @@ class NaivePassageRetriever:
         results = []
         for idx in top_indices:
             results.append({
+                'doc_id': self.doc_ids[idx],
                 'title': self.titles[idx],
                 'text': self.texts[idx],
                 'score': float(scores[idx])

@@ -1,24 +1,21 @@
 """\
-Upper Bound Experiment (MuSiQue) + CoT one-shot prompt
+Upper Bound Experiment (MuSiQue)
 =====================================================
 
 - Perfect Retrieval with ORIGINAL PASSAGES (supporting-fact titles -> full context passages)
 
-This is a CoT-adapted version: it uses Prompt/rag_qa_cot.py `prompt_template`
-(system + one-shot + assistant + user) and injects the actual input into
-`${prompt_user}`.
+Uses Prompt/answer_prompt.py.
 
 Usage:
     python Analysis/upper_bound_experiment_musique_cot.py
     python Analysis/upper_bound_experiment_musique_cot.py --max_questions 20
 
 Evaluation:
-    python evaluate_mrqa_cot.py Results/upper_bound_musique_original_results_cot_template.json
+    python evaluate_mrqa.py Results/upper_bound_musique_original_results_cot_template.json
 """
 
 import argparse
 import asyncio
-import copy
 import json
 import os
 import sys
@@ -36,7 +33,7 @@ if REPO_ROOT not in sys.path:
 
 from llm_logger import init_logger, finalize_log, log_llm_call
 
-from Prompt.rag_qa_cot import prompt_template as RAG_QA_TEMPLATE
+from Prompt.answer_prompt import NAIVE_RAG_FINAL_ANSWER_PROMPT
 
 load_dotenv()
 
@@ -52,46 +49,15 @@ CONFIG = {
     'result_cot_template': 'Results/upper_bound_musique_original_results_cot_template.json',
 }
 
-VARIANT_RAG_QA_TEMPLATE = 'rag_qa_template'
+PROMPT_VARIANT = 'answer_prompt'
 
-# Backward-compatible alias
-_ALIASES = {
-    'cot_template': VARIANT_RAG_QA_TEMPLATE,
-}
-
-
-def _build_messages(prompt_user: str, template: List[dict]):
-    messages = copy.deepcopy(template)
-    # last message must contain ${prompt_user}
-    messages[-1]['content'] = prompt_user
-    return messages
-
-
-def _format_chat_messages_for_log(messages: List[dict]) -> str:
-    parts: List[str] = []
-    for i, m in enumerate(messages, 1):
-        role = m.get('role', 'unknown')
-        content = m.get('content', '')
-        parts.append(f"--- message {i} ({role}) ---\n{content}")
-    return "\n\n".join(parts)
-
-
-def _build_prompt_user_cot_template(passages: List[Tuple[str, str]], question: str) -> str:
-    docs = ''
-    for title, text in passages:
-        docs += f"Wikipedia Title: {title}\n{text}\n"
-    # Match Prompt/rag_qa_cot.py format: docs + Question + Thought:
-    return f"{docs}\n\nQuestion: {question}\nThought: "
-
-
-async def call_llm_cot(client: AsyncOpenAI, messages: List[dict]) -> str:
-    response = await client.chat.completions.create(
-        model=MODEL,
-        messages=messages,
-        temperature=0,
-        max_tokens=MAX_TOKENS,
-    )
-    return response.choices[0].message.content.strip()
+def _extract_answer(text: str) -> str:
+    if not text:
+        return ""
+    t = text.strip()
+    if t.lower().startswith("answer:"):
+        return t.split(":", 1)[1].strip()
+    return t
 
 
 async def process_question_original(
@@ -161,32 +127,24 @@ async def process_question_original(
 
         # Build prompt_user per variant
         passages_for_template: List[Tuple[str, str]] = []
-        # For cot_template, construct (title,text) list from the same injected passages.
-        # We already have title/text in the loop above; rebuild from context_by_title to avoid parsing strings.
-        for title in injected_titles:
-            occurrences = context_by_title.get(title, [])
-            if not occurrences:
-                continue
-            seen_texts = set()
-            for occ_idx, sents in enumerate(occurrences, 1):
-                full_passage = "".join(sents) if isinstance(sents, list) else str(sents)
-                full_passage = full_passage.strip()
-                if not full_passage or full_passage in seen_texts:
-                    continue
-                seen_texts.add(full_passage)
-                title_label = f"{title} (occurrence {occ_idx})" if len(occurrences) > 1 else title
-                passages_for_template.append((title_label, full_passage))
+        prompt_user = NAIVE_RAG_FINAL_ANSWER_PROMPT.replace("{{passages}}", passages_text.strip())
+        prompt_user = prompt_user.replace("{{question}}", question)
+        messages = [
+            {"role": "system", "content": "You are a precise question answering system."},
+            {"role": "user", "content": prompt_user},
+        ]
+        call_type = 'Upper Bound Original Passages (answer_prompt)'
 
-        if variant != VARIANT_RAG_QA_TEMPLATE:
-            raise ValueError(f"Unknown variant: {variant}")
+        response = await client.chat.completions.create(
+            model=MODEL,
+            messages=messages,
+            temperature=0,
+            max_tokens=MAX_TOKENS,
+        )
+        predicted_raw = response.choices[0].message.content.strip()
+        predicted = _extract_answer(predicted_raw)
 
-        prompt_user = _build_prompt_user_cot_template(passages_for_template, question)
-        messages = _build_messages(prompt_user, RAG_QA_TEMPLATE)
-        call_type = 'Upper Bound Original Passages (rag_qa_template)'
-
-        predicted = await call_llm_cot(client, messages)
-
-        full_prompt_for_log = _format_chat_messages_for_log(messages)
+        full_prompt_for_log = prompt_user
 
         log_llm_call(
             call_type=call_type,
@@ -199,7 +157,7 @@ async def process_question_original(
                 "sf_titles": list(sf_info.keys()),
                 "sf_titles_ambiguous_in_context": ambiguous_titles,
                 "num_injected_passages": passage_counter,
-                "prompt_variant": variant,
+                "prompt_variant": PROMPT_VARIANT,
             },
         )
 
@@ -213,21 +171,14 @@ async def process_question_original(
             "sf_titles_injected": injected_titles,
             "sf_titles_ambiguous_in_context": ambiguous_titles,
             "num_injected_passages": passage_counter,
-            "prompt_variant": variant,
+            "prompt_variant": PROMPT_VARIANT,
             "success": True,
         }
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description='Upper Bound Experiments (MuSiQue) + CoT prompt')
+    parser = argparse.ArgumentParser(description='Upper Bound Experiments (MuSiQue)')
     parser.add_argument('--max_questions', type=int, default=None, help='Limit number of questions (debug)')
-    parser.add_argument(
-        '--variant',
-        type=str,
-        default=VARIANT_RAG_QA_TEMPLATE,
-        choices=[VARIANT_RAG_QA_TEMPLATE, 'cot_template'],
-        help='Which CoT prompting variant to run',
-    )
     return parser.parse_args()
 
 
@@ -240,7 +191,7 @@ async def main():
     )
 
     print("=" * 80)
-    print(f"Upper Bound Experiments (CoT) - {DATASET.upper()}")
+    print(f"Upper Bound Experiments - {DATASET.upper()}")
     print("=" * 80)
 
     with open(CONFIG['data_path'], 'r', encoding='utf-8') as f:
@@ -262,14 +213,12 @@ async def main():
 
     semaphore = asyncio.Semaphore(CONCURRENCY)
 
-    variant = _ALIASES.get(args.variant, args.variant)
-
     print("\n" + "=" * 60)
-    print(f"Experiment: Perfect Retrieval with ORIGINAL PASSAGES ({variant})")
+    print(f"Experiment: Perfect Retrieval with ORIGINAL PASSAGES ({PROMPT_VARIANT})")
     print("=" * 60)
 
     start_time = time.time()
-    tasks = [process_question_original(client, s, semaphore, variant=variant) for s in samples]
+    tasks = [process_question_original(client, s, semaphore, variant=PROMPT_VARIANT) for s in samples]
     results = await asyncio.gather(*tasks)
     elapsed = time.time() - start_time
 
@@ -277,11 +226,11 @@ async def main():
     with open(out_path, 'w', encoding='utf-8') as f:
         json.dump(
             {
-                'experiment': f"{DATASET.upper()} Perfect Retrieval with Original Passages ({variant})",
+                'experiment': f"{DATASET.upper()} Perfect Retrieval with Original Passages ({PROMPT_VARIANT})",
                 'dataset': DATASET,
                 'model': MODEL,
-                'prompt_mode': 'cot',
-                'prompt_variant': variant,
+                'prompt_mode': 'standard',
+                'prompt_variant': PROMPT_VARIANT,
                 'total': len(results),
                 'time': elapsed,
                 'results': results,
@@ -299,7 +248,7 @@ async def main():
     print(f"  - {CONFIG['result_cot_template']}")
 
     print("\nRun evaluation:")
-    print(f"  python evaluate_mrqa_cot.py {CONFIG['result_cot_template']}")
+    print(f"  python evaluate_mrqa.py {CONFIG['result_cot_template']}")
 
 
 if __name__ == '__main__':

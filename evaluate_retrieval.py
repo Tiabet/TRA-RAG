@@ -723,7 +723,7 @@ def evaluate(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('--result_path', type=str, default ='Results/test_musique_v11_200_results_v51.json', help='Path to result JSON file')
+    parser.add_argument('--result_path', type=str, default ='Results/NaiveRAG/NaiveRAG_passage_QD_cot_musique_k5.json', help='Path to result JSON file')
     parser.add_argument('--gold_path', type=str, default='MuSiQue/musique_sample_200_corpus_idx.json', help='Path to gold dataset')
     # parser.add_argument('--gold_path', type=str, default='HotpotQA/hotpotqa_sample_200_corpus_idx.json', help='Path to gold dataset')
     parser.add_argument('--key', type=str, default='doc_id', choices=['doc_id', 'title'], help='Evaluation key')

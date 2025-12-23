@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 """\
-Debug: rag_qa_cot one-shot prompt wiring (single MuSiQue question)
+Debug: v11 paths-as-hints pipeline wiring (single MuSiQue question)
 =================================================================
 
 Runs ONE question through `NewMultihopPipelineV11PathsHintCoT` and logs the *actual*
-chat messages sent to the LLM (including one-shot examples) for:
+chat messages sent to the LLM for:
 - sub-question answering calls
 - final main-query answering call
 
 Usage:
-  python debug_rag_qa_cot_one_question.py
-  python debug_rag_qa_cot_one_question.py --index 0
+    python <this_file>.py
+    python <this_file>.py --index 0
 
 Env:
   ALICE_OPENAI_KEY, ALICE_CHAT_URL, ALICE_EMBED_URL

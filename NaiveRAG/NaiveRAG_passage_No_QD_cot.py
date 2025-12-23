@@ -3,7 +3,7 @@
 Naive RAG - Passage Level (No Query Decomposition) + CoT one-shot
 ================================================================
 Retrieves passages directly using vector embeddings and answers using
-Prompt/rag_qa_cot.py `prompt_template` (one-shot) by injecting `${prompt_user}`.
+Prompt/answer_prompt.py.
 
 Dataset-compatible (hotpotqa / musique).
 
@@ -30,23 +30,20 @@ from openai import AsyncOpenAI
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from NaiveRAG.naive_passage_retriever import NaivePassageRetriever
-from Prompt.rag_qa_cot import prompt_template as RAG_QA_TEMPLATE
+from Prompt.answer_prompt import NAIVE_RAG_FINAL_ANSWER_PROMPT
 from llm_logger import init_logger, finalize_log, log_llm_call
 
 
-COT_MAX_TOKENS = int(os.getenv("COT_MAX_TOKENS", "2048"))
-
-def _build_messages(prompt_user: str):
-    messages = copy.deepcopy(RAG_QA_TEMPLATE)
-    messages[-1]["content"] = prompt_user
-    return messages
+COT_MAX_TOKENS = int(os.getenv("COT_MAX_TOKENS", "256"))
 
 
-def _build_prompt_user_rag_qa_template(passages, question: str) -> str:
-    docs = ''
-    for title, text in passages:
-        docs += f"Wikipedia Title: {title}\n{text}\n"
-    return f"{docs}\n\nQuestion: {question}\nThought: "
+def _extract_answer(text: str) -> str:
+    if not text:
+        return ""
+    t = text.strip()
+    if t.lower().startswith("answer:"):
+        return t.split(":", 1)[1].strip()
+    return t
 
 
 async def process_question(client, retriever, item, k):
@@ -57,28 +54,30 @@ async def process_question(client, retriever, item, k):
 
     # Format passages
     passage_text = ""
-    passages_for_template = []
     for i, res in enumerate(results, 1):
         passage_text += f"[{i}] {res['title']}\n{res['text']}\n\n"
-        passages_for_template.append((res['title'], res['text']))
 
-    prompt_user = _build_prompt_user_rag_qa_template(passages_for_template, question)
-    messages = _build_messages(prompt_user)
-    call_type = "Answer Generation (NaiveRAG No_QD + rag_qa_template)"
+    prompt_user = NAIVE_RAG_FINAL_ANSWER_PROMPT.replace("{{passages}}", passage_text.strip())
+    prompt_user = prompt_user.replace("{{question}}", question)
+    call_type = "Answer Generation (NaiveRAG No_QD)"
 
     response = await client.chat.completions.create(
         model="openai/gpt-4o-mini",
-        messages=messages,
+        messages=[
+            {"role": "system", "content": "You are a precise question answering system."},
+            {"role": "user", "content": prompt_user},
+        ],
         temperature=0.0,
         max_tokens=COT_MAX_TOKENS,
     )
 
-    answer = response.choices[0].message.content.strip()
+    raw = response.choices[0].message.content.strip()
+    answer = _extract_answer(raw)
 
     log_llm_call(
         call_type=call_type,
         input_text=prompt_user,
-        output_text=answer,
+        output_text=raw,
         context={
             "question": question,
             "k": k,
@@ -87,13 +86,26 @@ async def process_question(client, retriever, item, k):
         },
     )
 
+    qid = item.get("_id") or item.get("id")
+
+    final_retrieved_passages = [
+        {
+            "doc_id": r.get("doc_id"),
+            "title": r.get("title"),
+            "score": r.get("score"),
+        }
+        for r in results
+    ]
+
     return {
-        "id": item.get("_id"),
+        "id": qid,
         "question": question,
         "gold_answer": item["answer"],
         "predicted_answer": answer,
+        "predicted_answer_raw": raw,
         "answer_aliases": item.get("answer_aliases", []),
-        "retrieved_passages": [{"title": r["title"]} for r in results],
+        "final_retrieved_passages": final_retrieved_passages,
+        "retrieved_passages": [{"doc_id": r.get("doc_id"), "title": r.get("title")} for r in results],
     }
 
 
@@ -107,10 +119,10 @@ async def main():
     init_logger()
 
     if args.dataset == "hotpotqa":
-        data_path = "HotpotQA/hotpotqa_sample_200.json"
+        data_path = "HotpotQA/hotpotqa_sample_200_corpus_idx.json"
         cache_path = "HotpotQA/passage_embeddings_sample_200.npz"
     else:
-        data_path = "MuSiQue/musique_sample_200.json"
+        data_path = "MuSiQue/musique_sample_200_corpus_idx.json"
         cache_path = "MuSiQue/passage_embeddings_sample_200.npz"
 
     chat_client = AsyncOpenAI(
@@ -153,7 +165,7 @@ async def main():
             "dataset": args.dataset,
             "k": args.k,
             "model": "gpt-4o-mini",
-            "prompt_variant": "rag_qa_template",
+            "prompt_variant": "answer_prompt",
         },
         "summary": {
             "total_questions": len(data),

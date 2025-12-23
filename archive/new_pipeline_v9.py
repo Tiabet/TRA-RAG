@@ -24,7 +24,7 @@ from openai import AsyncOpenAI
 from hybrid_path_retriever import HybridPathRetriever
 from llm_logger import log_llm_call, log_llm_error
 
-from Prompt.answer import DETAILED_SUBQUESTION_ANSWERING_PROMPT
+from Prompt.answer_prompt import DETAILED_SUBQUESTION_ANSWERING_PROMPT
 
 
 class MetadataLinkerFull:

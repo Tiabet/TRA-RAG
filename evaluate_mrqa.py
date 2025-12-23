@@ -199,7 +199,7 @@ def evaluate(file_path: Path, verbose: bool = False) -> Dict[str, float]:
     Returns:
         Dict with aggregated metrics
     """
-    print(f"📂 Loading: {file_path}")
+    print(f"Loading: {file_path}")
     results = load_results(file_path)
     print(f"   Total examples: {len(results)}")
     
@@ -221,8 +221,9 @@ def evaluate(file_path: Path, verbose: bool = False) -> Dict[str, float]:
         gold_answers = extract_gold_answers(item)
         predicted = extract_predicted_answer(item)
         
-        # Track "Insufficient information" answers
-        if "Insufficient information" in predicted or not predicted:
+        # Track "Insufficient information" answers (case-insensitive)
+        pred_str = predicted or ""
+        if (not pred_str.strip()) or ("insufficient information" in pred_str.lower()):
             insufficient_count += 1
         
         # Compute metrics
@@ -271,7 +272,7 @@ def evaluate(file_path: Path, verbose: bool = False) -> Dict[str, float]:
 def print_results(metrics: Dict[str, float], file_path: Path):
     """Print evaluation results."""
     print(f"\n{'='*60}")
-    print(f"📊 MRQA Official Evaluation Results")
+    print("MRQA Official Evaluation Results")
     print(f"{'='*60}")
     print(f"File: {file_path.name}")
     print(f"{'='*60}")
@@ -288,8 +289,8 @@ def print_results(metrics: Dict[str, float], file_path: Path):
 def main():
     parser = argparse.ArgumentParser(description="MRQA Official Evaluation")
     parser.add_argument("file", type=str, nargs="?", 
-                        # default="Results/test_hotpot_v11_200_results_v5.json",
-                        default = "Results/test_musique_v11_200_results_v51.json",
+                        default="Results/NaiveRAG/NaiveRAG_passage_No_QD_cot_hotpotqa_k5.json",
+                        # default = "Results/test_musique_v11_200_results_v51_cot.json",
                         help="Path to result JSON file")
     parser.add_argument("-v", "--verbose", action="store_true",
                         help="Print per-example results")
@@ -301,7 +302,7 @@ def main():
     if args.compare:
         # Compare multiple files
         print(f"\n{'='*90}")
-        print("📊 Comparison of Multiple Results")
+        print("Comparison of Multiple Results")
         print(f"{'='*90}")
         print(f"{'File':<45} {'EM':>8} {'Acc':>8} {'F1':>8} {'Prec':>8} {'Recall':>8}")
         print(f"{'-'*90}")

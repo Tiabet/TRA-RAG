@@ -9,7 +9,7 @@ from openai import AsyncOpenAI
 # Add root directory to sys.path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from Prompt.subquestion_answering_prompt import FINAL_ANSWER_SYNTHESIS_PROMPT
+from Prompt.answer_prompt import FINAL_ANSWER_SYNTHESIS_PROMPT
 
 # Load environment variables
 load_dotenv()

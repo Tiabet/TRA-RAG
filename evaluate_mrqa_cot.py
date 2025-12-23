@@ -180,7 +180,7 @@ def extract_predicted_answer(item: Dict) -> str:
 # Main Evaluation
 # ============================================================
 def evaluate(file_path: Path, verbose: bool = False) -> Tuple[Dict[str, float], List[Dict]]:
-    print(f'📂 Loading: {file_path}')
+    print(f'Loading: {file_path}')
     results = load_results(file_path)
     print(f'   Total examples: {len(results)}')
 
@@ -200,7 +200,8 @@ def evaluate(file_path: Path, verbose: bool = False) -> Tuple[Dict[str, float], 
         gold_answers = extract_gold_answers(item)
         predicted = extract_predicted_answer(item)
 
-        if 'Insufficient information' in (predicted or '') or not predicted:
+        pred_str = predicted or ''
+        if (not pred_str.strip()) or ('insufficient information' in pred_str.lower()):
             insufficient_count += 1
 
         metrics = compute_metrics_with_aliases(gold_answers, predicted)
@@ -250,7 +251,7 @@ def evaluate(file_path: Path, verbose: bool = False) -> Tuple[Dict[str, float], 
 
 def print_results(metrics: Dict[str, float], file_path: Path):
     print(f"\n{'='*60}")
-    print('📊 MRQA Official Evaluation Results (CoT adapter)')
+    print('MRQA Official Evaluation Results (CoT adapter)')
     print(f"{'='*60}")
     print(f'File: {file_path.name}')
     print(f"{'='*60}")
@@ -270,7 +271,7 @@ def main():
         'file',
         type=str,
         nargs='?',
-        default='Results/test_musique_v12_ragcot_results_v4aligned_v1.json',
+        default='Results/test_musique_v11_200_results_v51_cot.json',
         help='Path to result JSON file',
     )
     parser.add_argument('-v', '--verbose', action='store_true', help='Print per-example results')
@@ -280,7 +281,7 @@ def main():
 
     if args.compare:
         print(f"\n{'='*90}")
-        print('📊 Comparison of Multiple Results (CoT adapter)')
+        print('Comparison of Multiple Results (CoT adapter)')
         print(f"{'='*90}")
         print(f"{'File':<45} {'EM':>8} {'Acc':>8} {'F1':>8} {'Prec':>8} {'Recall':>8}")
         print(f"{'-'*90}")

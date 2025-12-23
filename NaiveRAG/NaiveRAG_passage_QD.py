@@ -23,8 +23,10 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from NaiveRAG.naive_passage_retriever import NaivePassageRetriever
 from query_decomposition import decompose_query, substitute_answers
-from Prompt.answer import DETAILED_SUBQUESTION_ANSWERING_PROMPT
-from Prompt.subquestion_answering_prompt import FINAL_ANSWER_SYNTHESIS_PROMPT
+from Prompt.answer_prompt import (
+    DETAILED_SUBQUESTION_ANSWERING_PROMPT,
+    FINAL_ANSWER_SYNTHESIS_PROMPT,
+)
 from llm_logger import log_llm_call, init_logger, finalize_log
 
 async def answer_subquestion(client, retriever, sq, decomposition, previous_context, k: int):
@@ -39,19 +41,11 @@ async def answer_subquestion(client, retriever, sq, decomposition, previous_cont
     for i, res in enumerate(results, 1):
         passage_text += f"[{i}] {res['title']}\n{res['text']}\n\n"
         
-    # Prompt
-    prompt = DETAILED_SUBQUESTION_ANSWERING_PROMPT.replace("{{main_query}}", decomposition.main_query)
-    
-    # We need to inject the specific subquestion and passages into the prompt
-    # The DETAILED_SUBQUESTION_ANSWERING_PROMPT in Prompt/answer.py seems to be a template 
-    # but it doesn't have {{passages}} or {{subquestion}} placeholders in the text I read earlier?
-    # Let's re-read Prompt/answer.py content carefully.
-    # Ah, I see it has {{main_query}} and "---Previous Context---".
-    # But where does the current passage and subquestion go?
-    # The prompt text I read earlier ends with "---Previous Context (IMPORTANT - May contain the answer!)---".
-    # It seems I need to append the context, passages, and the question manually.
-    
-    full_prompt = prompt + "\n" + previous_context + "\n\n---Current Information---\n" + passage_text + "\n\n---Sub-Question---\n" + actual_question + "\n\n---Answer---\n"
+    full_prompt = DETAILED_SUBQUESTION_ANSWERING_PROMPT
+    full_prompt = full_prompt.replace("{{main_query}}", decomposition.main_query)
+    full_prompt = full_prompt.replace("{{previous_context}}", previous_context if previous_context else "None")
+    full_prompt = full_prompt.replace("{{passages}}", passage_text.strip() if passage_text else "No passages retrieved.")
+    full_prompt = full_prompt.replace("{{subquestion}}", actual_question)
     
     response = await client.chat.completions.create(
         model="openai/gpt-4o-mini",
@@ -89,7 +83,7 @@ async def process_question(client, retriever, item, k: int):
     
     decomposition = decomposition_result['decomposition']
         
-    all_passages = {} # title -> {text, best_score}
+    all_passages = {} # doc_id -> {title, text, best_score}
     
     # 2. Process Sub-questions
     for sq in decomposition.subquestions:
@@ -105,12 +99,15 @@ async def process_question(client, retriever, item, k: int):
         sq.answer = answer
         sq.retrieved_passages = results
         
-        # Collect passages (keep best score per title)
+        # Collect passages (keep best score per doc_id)
         for res in results:
-            title = res['title']
+            doc_id = str(res.get('doc_id')) if res.get('doc_id') is not None else ''
+            if not doc_id:
+                continue
+            title = res.get('title')
             score = float(res.get('score', 0.0))
-            if title not in all_passages or score > all_passages[title]['best_score']:
-                all_passages[title] = {'text': res['text'], 'best_score': score}
+            if doc_id not in all_passages or score > all_passages[doc_id]['best_score']:
+                all_passages[doc_id] = {'title': title, 'text': res['text'], 'best_score': score}
             
     # 3. Final Answer
     # Final Answer: use top-5 passages among those collected from sub-questions
@@ -118,8 +115,15 @@ async def process_question(client, retriever, item, k: int):
     top_passages = ranked[:5]
 
     unique_passages_text = ""
-    for i, (title, payload) in enumerate(top_passages, 1):
+    final_retrieved_passages = []
+    for i, (doc_id, payload) in enumerate(top_passages, 1):
+        title = payload.get('title') or ''
         unique_passages_text += f"[{i}] {title}\n{payload['text']}\n\n"
+        final_retrieved_passages.append({
+            'doc_id': str(doc_id),
+            'title': title,
+            'score': float(payload.get('best_score', 0.0)),
+        })
         
     # Format chain
     chain_text = ""
@@ -153,12 +157,15 @@ async def process_question(client, retriever, item, k: int):
         }
     )
     
+    qid = item.get('_id') or item.get('id')
+
     return {
-        'id': item.get('_id'),
+        'id': qid,
         'question': question,
         'gold_answer': item['answer'],
         'predicted_answer': final_answer,
         'answer_aliases': item.get('answer_aliases', []),
+        'final_retrieved_passages': final_retrieved_passages,
         'decomposition': [sq.to_dict() for sq in decomposition.subquestions]
     }
 
@@ -173,10 +180,10 @@ async def main():
     
     # Config
     if args.dataset == 'hotpotqa':
-        data_path = 'HotpotQA/hotpotqa_sample_200.json'
+        data_path = 'HotpotQA/hotpotqa_sample_200_corpus_idx.json'
         cache_path = 'HotpotQA/passage_embeddings_sample_200.npz'
     else:
-        data_path = 'MuSiQue/musique_sample_200.json'
+        data_path = 'MuSiQue/musique_sample_200_corpus_idx.json'
         cache_path = 'MuSiQue/passage_embeddings_sample_200.npz'
         
     # Chat Client (for answer generation)
