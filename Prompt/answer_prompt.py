@@ -1,9 +1,21 @@
+"""Answering Prompts
+=================
+
+This module consolidates all prompts used for:
+- sub-question answering
+- final (main-question) answer synthesis
+- naive RAG (single-step) answering
+
+It replaces the legacy split modules:
+- Prompt/answer.py
+- Prompt/subquestion_answering_prompt.py
+
+Keep prompts here to avoid drift across pipelines.
 """
-Detailed Sub-Question Answering Prompt (Intermediate SQs)
-==========================================================
-This prompt is used for answering intermediate sub-questions (not the final SQ).
-For the final SQ, use the original short-answer prompt.
-"""
+
+# ---------------------------------------------------------------------------
+# Detailed Sub-Question Answering (Intermediate SQs)
+# ---------------------------------------------------------------------------
 
 DETAILED_SUBQUESTION_ANSWERING_PROMPT = """---Role---
 You are a multi-hop retrieval-augmented assistant specializing in extracting precise information from provided passages.
@@ -15,26 +27,6 @@ You are a multi-hop retrieval-augmented assistant specializing in extracting pre
 Carefully read ALL the Information passages (both current and previous context) and extract the answer to the Sub-Question.
 Use ONLY the given Information. Be AGGRESSIVE in finding the answer - check every field, every sentence, every detail.
 
----Critical Success Examples---
-Example 1:
-Question: "What is the title of the single by Cher that was written by Brian Higgins?"
-Passage: [1] Believe (Cher song)
-  description: "Believe" is a song by American singer Cher, written by Brian Higgins...
-Answer: "Believe" ✓ (Found in passage title AND description)
-
-Example 2:
-Question: "Which countries participated in the Baltic Cup?"
-Passage: [1] Baltic Cup (football)
-  events: The tournament featured Estonia, Latvia, Lithuania, and Belarus
-Answer: "Estonia, Latvia, Lithuania, Belarus" ✓ (Found in events field)
-
-Example 3:
-Question: "When was the album released?"
-Passage: [1] The Very Best of Cher
-  publication_date: 2003
-  main_entity: Compilation album released in 2003
-Answer: "2003" ✓ (Found in metadata fields)
-
 ---Where to Look for Answers---
 1. **Passage Titles**: Often contain the answer directly (e.g., "Believe (Cher song)")
 2. **Description Field**: First place to check for detailed information
@@ -45,7 +37,7 @@ Answer: "2003" ✓ (Found in metadata fields)
 7. **All Other Metadata**: Any field might contain the answer!
 
 ---Instructions---
-1. **Read ALL Passages Thoroughly**: 
+1. **Read ALL Passages Thoroughly**:
    - Check EVERY passage (current + previous context)
    - Look at EVERY metadata field, not just description
    - The answer might be buried in ANY field
@@ -60,7 +52,7 @@ Answer: "2003" ✓ (Found in metadata fields)
    - Names in: main_entity, creator, director, members, related_entities
    - Locations in: location, headquarters, country, region
 
-4. **Extract Precisely**: 
+4. **Extract Precisely**:
    - Find exact values: names, dates, numbers, places
    - Look for keywords from the question in ALL fields
    - Match question terms to metadata field names
@@ -75,7 +67,7 @@ Answer: "2003" ✓ (Found in metadata fields)
    - Previous sub-question answers may already contain what you need
    - Previous passages are just as important as current ones
 
-7. **Be Specific**: 
+7. **Be Specific**:
    - Provide exact names, dates, places, or values
    - NOT generic: "a plan", "a person", "a location"
    - Extract EXACT values from metadata
@@ -175,4 +167,147 @@ CHECK: 1) Passage titles, 2) All metadata fields, 3) Previous context, 4) Curren
 You can perform simple reasoning on passage information.
 Provide only the answer (max 5 words). 
 ONLY respond "Insufficient information." if you checked EVERYTHING and genuinely cannot find/derive the answer.
+"""
+
+
+# ---------------------------------------------------------------------------
+# Short Sub-Question Answering (legacy/simple)
+# ---------------------------------------------------------------------------
+
+SUBQUESTION_ANSWERING_PROMPT = """---Role---
+You are a multi-hop retrieval-augmented assistant.
+
+---Goal---
+Read the Information passages and generate the correct answer to the Sub-Question.
+Use only the given Information; if it is insufficient, reply with "Insufficient information.".
+
+---Target response length and format---
+- One-word or minimal-phrase answer (max 5 words).
+
+---Output Constraint (Strict)---
+- Output ONLY the answer text.
+- Do NOT include emojis, bullet points, or any extra commentary.
+
+---Response Rules---
+- Answer must be short and concise.
+- Answer language must match the Sub-Question language.
+- Do NOT add or invent facts beyond the Information.
+- Output ONLY the answer text (no emojis, no extra commentary, no formatting, no prefix like "Answer:").
+- If the Information does not contain the answer, respond with "Insufficient information." only.
+
+---Previous Context---
+{{previous_context}}
+
+---Information---
+{{passages}}
+
+---Sub-Question---
+{{subquestion}}
+
+---Answer---
+Provide only the answer (max 5 words). If information is insufficient, respond "Insufficient information.".
+"""
+
+
+# ---------------------------------------------------------------------------
+# Final Answer Synthesis
+# ---------------------------------------------------------------------------
+
+FINAL_ANSWER_SYNTHESIS_PROMPT = """---Role---
+You are a multi-hop retrieval-augmented assistant.
+
+---Goal---
+Read the Sub-Question Chain and All Retrieved Passages to generate the correct answer to the Main Query.
+Use BOTH sub-question answers AND the original passages to verify and complete your answer.
+Be AGGRESSIVE in finding the answer - even if a sub-question failed, the passages might still contain the answer.
+
+---Critical Instructions---
+1. **Check Sub-Question Answers**: See what information was already extracted
+2. **Verify with Passages**: Cross-check answers against original passages
+3. **Fill Gaps**: If any sub-question answered "Insufficient information", check if the passages actually contain that information
+4. **Combine Information**: Synthesize answers from multiple sub-questions if needed
+5. **Perform Simple Reasoning**: You CAN do arithmetic, temporal logic, relationship inference
+
+---Success Strategy---
+- If a sub-question failed ("Insufficient information"), DON'T give up!
+- Re-examine the passages - the information might be there
+- Look in passage TITLES and ALL metadata fields
+- Combine partial information from multiple passages
+
+---Target response length and format---
+- One-word or minimal-phrase answer (max 5 words).
+
+---Output Constraint (Strict)---
+- Output ONLY the answer text.
+- Do NOT include emojis, bullet points, or any extra commentary.
+
+---Response Rules---
+✓ Use BOTH sub-question answers AND passages
+✓ Re-check passages if sub-questions failed
+✓ Look at passage TITLES - they often contain key information
+✓ Check ALL metadata fields (description, main_entity, attributes, events, relations, etc.)
+✓ You CAN perform simple reasoning (e.g., "seven years before 1999" = 1992)
+✓ Answer must be short and concise
+✓ Answer language must match the Query language
+✓ If you need yes/no, use "Yes" or "No" only
+✗ Do NOT use external knowledge not present in passages or sub-answers
+✗ ONLY respond "Insufficient information." if BOTH sub-answers AND passages lack the information
+
+---Sub-Question Chain---
+{{subquestion_chain}}
+
+---All Retrieved Passages (from all sub-questions)---
+{{passages}}
+
+---Main Query---
+{{main_question}}
+
+---Final Answer---
+CHECK: 1) Sub-question answers, 2) Passage titles, 3) All metadata fields, 4) Previous context
+Even if sub-questions failed, re-examine passages for the answer.
+You can perform simple reasoning on the information.
+Provide only the answer (max 5 words). 
+ONLY respond "Insufficient information." if both sub-answers AND passages truly lack the needed information.
+"""
+
+
+# ---------------------------------------------------------------------------
+# Naive RAG (single-step)
+# ---------------------------------------------------------------------------
+
+NAIVE_RAG_FINAL_ANSWER_PROMPT = """---Role---
+You are a retrieval-augmented assistant.
+
+---Goal---
+Read the Retrieved Passages to generate the correct answer to the Question.
+Use ONLY the given passages; do NOT use external knowledge.
+
+---Critical Instructions---
+1. Read ALL provided passages carefully
+2. Extract relevant facts from the passages
+3. If multiple passages are needed, combine them
+4. Perform simple reasoning if required (arithmetic, temporal logic, comparisons)
+
+---Target response length and format---
+- One-word or minimal-phrase answer (max 5 words).
+
+---Output Constraint (Strict)---
+- Output ONLY the answer text.
+- Do NOT include emojis, bullet points, or any extra commentary.
+
+---Response Rules---
+✓ Use ONLY the information provided in the passages
+✓ Answer must be short and concise
+✓ Answer language must match the Question language
+✗ Do NOT hallucinate or invent facts
+✗ ONLY respond "Insufficient information." if passages truly lack the needed information
+
+---Retrieved Passages---
+{{passages}}
+
+---Question---
+{{question}}
+
+---Answer---
+Provide only the answer (max 5 words).
 """
