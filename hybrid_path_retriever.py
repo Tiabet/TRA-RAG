@@ -23,6 +23,8 @@ from openai import AsyncOpenAI
 import bm25s
 import Stemmer
 
+from llm_provider import create_async_embed_client, detect_provider
+
 
 class HybridPathRetriever:
     """Hybrid retriever combining BM25 and dense embeddings."""
@@ -86,17 +88,21 @@ class HybridPathRetriever:
         }
         
         # OpenAI client for query embedding
-        self.api_key = os.getenv('ALICE_OPENAI_KEY')
-        self.embed_url = os.getenv('ALICE_EMBED_URL')
-        
-        if self.api_key and self.embed_url:
-            self.embed_client = AsyncOpenAI(
-                api_key=self.api_key,
-                base_url=self.embed_url
-            )
+        self.embed_client = None
+        self.embed_model = "text-embedding-3-small"
+
+        # Dense search is optional. If no API keys are set, we still allow BM25-only retrieval.
+        has_any_key = bool((os.getenv("OPENAI_API_KEY") or "").strip() or (os.getenv("ALICE_OPENAI_KEY") or "").strip())
+        if has_any_key:
+            try:
+                cfg = detect_provider()
+                self.embed_model = cfg.embed_model
+                self.embed_client = create_async_embed_client(cfg)
+            except Exception as e:
+                self.embed_client = None
+                print(f"Warning: Embedding client not configured. Dense search disabled. ({e})")
         else:
-            self.embed_client = None
-            print("Warning: Embedding client not configured. Dense search disabled.")
+            print("Warning: No API key found. Dense search disabled (BM25-only).")
         
         print(f"[OK] Loaded {len(self.metadata)} paths")
         print(f"[OK] BM25 weight: {bm25_weight}, Dense weight: {dense_weight}")
@@ -239,7 +245,7 @@ class HybridPathRetriever:
             raise ValueError("Embedding client not configured")
         
         response = await self.embed_client.embeddings.create(
-            model="text-embedding-3-small",
+            model=self.embed_model,
             input=[query]
         )
         
@@ -275,6 +281,9 @@ class HybridPathRetriever:
         Returns:
             List of (index, score) tuples
         """
+        if not self.embed_client:
+            return []
+
         query_embedding = await self.embed_query(query)
         
         # Cosine similarity (dot product since normalized)
@@ -290,7 +299,8 @@ class HybridPathRetriever:
         query: str,
         top_k: int = 3,
         bm25_candidates: int = 50,
-        dense_candidates: int = 50
+        dense_candidates: int = 50,
+        fusion_method: str = 'rrf',
     ) -> List[Dict]:
         """
         Hybrid search combining BM25 and dense.
@@ -304,12 +314,66 @@ class HybridPathRetriever:
         Returns:
             List of result dicts with path metadata and scores
         """
-        # Get BM25 results
+        fusion_method = str(fusion_method or 'rrf').lower().strip()
+
+        # Get component results. We keep these calls unconditional because many modes
+        # depend on the candidate union, but we can short-circuit for pure modes.
         bm25_results = self.search_bm25(query, bm25_candidates)
-        
-        # Get dense results
         dense_results = await self.search_dense(query, dense_candidates)
-        
+
+        # Pure modes (ablation): return a single signal without rank fusion.
+        if fusion_method == 'bm25':
+            if not bm25_results:
+                return []
+            bm25_sorted = sorted(bm25_results, key=lambda x: x[1], reverse=True)[:top_k]
+            results: List[Dict] = []
+            for idx, bm25_raw in bm25_sorted:
+                idx_i = int(idx)
+                results.append(
+                    {
+                        'index': idx_i,
+                        'title': str(self.titles[idx_i]),
+                        'doc_id': self._opt_field(self.doc_ids, idx_i),
+                        'source_title': self._opt_field(self.source_titles, idx_i),
+                        'entity_title': self._opt_field(self.entity_titles, idx_i),
+                        'key_path': str(self.key_paths[idx_i]),
+                        'value': str(self.values[idx_i]),
+                        'score': float(bm25_raw),
+                        'bm25_score': float(bm25_raw),
+                        'dense_score': 0.0,
+                        'fusion_method': fusion_method,
+                        'bm25_raw_score': float(bm25_raw),
+                        'dense_raw_score': None,
+                    }
+                )
+            return results
+
+        if fusion_method == 'dense':
+            if not dense_results:
+                return []
+            dense_sorted = sorted(dense_results, key=lambda x: x[1], reverse=True)[:top_k]
+            results: List[Dict] = []
+            for idx, dense_raw in dense_sorted:
+                idx_i = int(idx)
+                results.append(
+                    {
+                        'index': idx_i,
+                        'title': str(self.titles[idx_i]),
+                        'doc_id': self._opt_field(self.doc_ids, idx_i),
+                        'source_title': self._opt_field(self.source_titles, idx_i),
+                        'entity_title': self._opt_field(self.entity_titles, idx_i),
+                        'key_path': str(self.key_paths[idx_i]),
+                        'value': str(self.values[idx_i]),
+                        'score': float(dense_raw),
+                        'bm25_score': 0.0,
+                        'dense_score': float(dense_raw),
+                        'fusion_method': fusion_method,
+                        'bm25_raw_score': None,
+                        'dense_raw_score': float(dense_raw),
+                    }
+                )
+            return results
+
         # RRF (Reciprocal Rank Fusion)
         # Score = 1 / (k + rank)
         rrf_k = 60
@@ -327,27 +391,67 @@ class HybridPathRetriever:
                 dense_ranks[idx] = rank
                 all_indices.add(idx)
         
+        def _minmax_scale(values: Dict[int, float]) -> Dict[int, float]:
+            if not values:
+                return {}
+            vmin = min(values.values())
+            vmax = max(values.values())
+            denom = (vmax - vmin)
+            if denom <= 0:
+                # All equal (or only one value): no separation.
+                return {k: 0.0 for k in values.keys()}
+            return {k: (float(v) - float(vmin)) / float(denom) for k, v in values.items()}
+
         combined_scores = []
-        for idx in all_indices:
-            # Calculate RRF scores
-            bm25_score = 0.0
-            if idx in bm25_ranks:
-                bm25_score = 1.0 / (rrf_k + bm25_ranks[idx])
-            
-            dense_score = 0.0
-            if idx in dense_ranks:
-                dense_score = 1.0 / (rrf_k + dense_ranks[idx])
-            
-            # Weighted RRF
-            combined = (self.bm25_weight * bm25_score) + (self.dense_weight * dense_score)
-            combined_scores.append((idx, combined, bm25_score, dense_score))
+        if fusion_method == 'minmax':
+            # Build raw-score maps over the *candidate union*.
+            bm25_raw_map: Dict[int, float] = {int(idx): float(score) for idx, score in (bm25_results or [])}
+            dense_raw_map: Dict[int, float] = {int(idx): float(score) for idx, score in (dense_results or [])}
+
+            # Ensure every candidate exists in the maps (missing => 0.0)
+            bm25_raw_map_all = {int(idx): float(bm25_raw_map.get(int(idx), 0.0)) for idx in all_indices}
+            dense_raw_map_all = {int(idx): float(dense_raw_map.get(int(idx), 0.0)) for idx in all_indices}
+
+            bm25_scaled = _minmax_scale(bm25_raw_map_all)
+            dense_scaled = _minmax_scale(dense_raw_map_all)
+
+            for idx in all_indices:
+                idx_i = int(idx)
+                bm25_s = float(bm25_scaled.get(idx_i, 0.0))
+                dense_s = float(dense_scaled.get(idx_i, 0.0))
+                combined = (self.bm25_weight * bm25_s) + (self.dense_weight * dense_s)
+                combined_scores.append(
+                    (
+                        idx_i,
+                        float(combined),
+                        float(bm25_s),
+                        float(dense_s),
+                        float(bm25_raw_map_all.get(idx_i, 0.0)),
+                        float(dense_raw_map_all.get(idx_i, 0.0)),
+                    )
+                )
+        else:
+            # Default: RRF fusion over ranks.
+            for idx in all_indices:
+                # Calculate RRF scores
+                bm25_score = 0.0
+                if idx in bm25_ranks:
+                    bm25_score = 1.0 / (rrf_k + bm25_ranks[idx])
+
+                dense_score = 0.0
+                if idx in dense_ranks:
+                    dense_score = 1.0 / (rrf_k + dense_ranks[idx])
+
+                # Weighted RRF
+                combined = (self.bm25_weight * bm25_score) + (self.dense_weight * dense_score)
+                combined_scores.append((int(idx), float(combined), float(bm25_score), float(dense_score), None, None))
         
         # Sort by combined score
         combined_scores.sort(key=lambda x: x[1], reverse=True)
         
         # Build results
         results = []
-        for idx, combined, bm25_s, dense_s in combined_scores[:top_k]:
+        for idx, combined, bm25_s, dense_s, bm25_raw, dense_raw in combined_scores[:top_k]:
             results.append({
                 'index': idx,
                 'title': str(self.titles[idx]),
@@ -358,7 +462,10 @@ class HybridPathRetriever:
                 'value': str(self.values[idx]),
                 'score': combined,
                 'bm25_score': bm25_s,
-                'dense_score': dense_s
+                'dense_score': dense_s,
+                'fusion_method': fusion_method,
+                'bm25_raw_score': bm25_raw,
+                'dense_raw_score': dense_raw,
             })
         
         return results

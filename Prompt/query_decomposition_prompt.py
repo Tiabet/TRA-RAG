@@ -75,7 +75,7 @@ Return ONLY valid JSON:
 No text outside JSON.
 
 ────────────────────────
-6-SHOT EXAMPLES
+EXAMPLES
 ────────────────────────
 
 Example 1
@@ -117,15 +117,15 @@ What currency is used where Billy Giles died?
     },
     {
       "id": "SQ2",
-      "question": "What part of the UK is [SQ1_Answer] located in?",
+      "question": "In which country is [SQ1_Answer] located?",
       "depends_on": ["SQ1"],
-      "reasoning": "The currency is determined at the regional level."
+      "reasoning": "We need the containing country to identify the relevant currency."
     },
     {
       "id": "SQ3",
-      "question": "What is the unit of currency in [SQ2_Answer]?",
+      "question": "What is the currency used in [SQ2_Answer]?",
       "depends_on": ["SQ2"],
-      "reasoning": "Once the region is known, its currency can be retrieved."
+      "reasoning": "Once the country is known, we can ask for its currency."
     }
   ]
 }

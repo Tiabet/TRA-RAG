@@ -1,7 +1,7 @@
 """
 Metadata Construction Prompt (Simplified - No Type/Subtype Schema)
 ==================================================================
-Type/subtype 스키마 없이 자유로운 형식으로 메타데이터 추출
+Extract metadata in a flexible format without enforcing a type/subtype schema.
 """
 
 metadata_construction_prompt = """
