@@ -156,6 +156,31 @@ class PathEmbeddingGenerator:
         
         # Extract text field
         texts = [entry['text'] for entry in data]
+
+        if not texts:
+            print("\n2. No texts found; writing empty embeddings")
+            embeddings = np.zeros((0,), dtype=np.float32)
+            print(f"   [OK] Generated {len(embeddings)} embeddings")
+            print(f"   [OK] Shape: {embeddings.shape}")
+
+            print(f"\n3. Saving embeddings to: {output_path}")
+            np.savez_compressed(
+                output_path,
+                embeddings=embeddings,
+                titles=np.array([], dtype=object),
+                key_paths=np.array([], dtype=object),
+                values=np.array([], dtype=object),
+                doc_ids=np.array([], dtype=object),
+                source_titles=np.array([], dtype=object),
+                entity_titles=np.array([], dtype=object),
+            )
+
+            index_path = output_path.replace('.npz', '_index.json')
+            with open(index_path, 'w', encoding='utf-8') as f:
+                json.dump([], f, ensure_ascii=False)
+
+            print(f"   [OK] Saved embeddings and index")
+            return
         
         # Generate embeddings
         print(f"\n2. Generating embeddings (model: {self.model})...")
@@ -167,7 +192,8 @@ class PathEmbeddingGenerator:
         
         print(f"   [OK] Generated {len(embeddings)} embeddings")
         print(f"   [OK] Shape: {embeddings.shape}")
-        print(f"   [OK] Time: {elapsed:.1f}s ({len(texts)/elapsed:.1f} texts/sec)")
+        tps = (len(texts) / elapsed) if elapsed > 0 else 0.0
+        print(f"   [OK] Time: {elapsed:.1f}s ({tps:.1f} texts/sec)")
         
         # Save embeddings
         print(f"\n3. Saving embeddings to: {output_path}")

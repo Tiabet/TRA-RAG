@@ -13,21 +13,23 @@ from dotenv import load_dotenv
 from tqdm import tqdm
 import time
 
+from llm_provider import create_async_chat_client, detect_provider
+
 # ============================================================
 # HYPERPARAMETERS
 # ============================================================
-CONCURRENCY = 50  # Number of parallel LLM calls
-MODEL = "openai/gpt-4o-mini"  # LLM model for evaluation
+CONCURRENCY = 100  # Number of parallel LLM calls
+MODEL = None  # Set after .env load
 # ============================================================
 
 # Load environment variables
 load_dotenv()
 
-# Initialize AsyncOpenAI client with ALICE API
-client = AsyncOpenAI(
-    api_key=os.getenv('ALICE_OPENAI_KEY'),
-    base_url=os.getenv('ALICE_CHAT_URL')
-)
+_PROVIDER_CFG = detect_provider()
+MODEL = _PROVIDER_CFG.chat_model  # LLM model for evaluation
+
+# Initialize AsyncOpenAI client (OpenAI: no base_url; ALICE: uses ALICE_CHAT_URL)
+client = create_async_chat_client(_PROVIDER_CFG)
 
 EVALUATION_PROMPT = """You are an expert evaluator for question-answering systems. Your task is to determine if a predicted answer is correct given a question and the gold (correct) answer.
 
@@ -70,8 +72,12 @@ async def evaluate_answer_with_llm(question: str, gold_answer: str, predicted_an
     )
     
     try:
+        model_to_use = model or MODEL
+        if _PROVIDER_CFG.provider == "openai" and isinstance(model_to_use, str) and model_to_use.startswith("openai/"):
+            model_to_use = model_to_use[len("openai/"):]
+
         response = await client.chat.completions.create(
-            model=model,
+            model=model_to_use,
             messages=[
                 {"role": "system", "content": "You are a precise and fair evaluator of question-answering systems."},
                 {"role": "user", "content": prompt}
@@ -308,13 +314,13 @@ if __name__ == "__main__":
     import argparse
     
     parser = argparse.ArgumentParser(description="LLM-based answer evaluation")
-    parser.add_argument('--pred', type=Path, default=Path('Results/test_musique_v11_200_results_v52_cot.json'),
+    parser.add_argument('--pred', type=Path, default=Path('Results/NaiveRAG/2wiki_naive_qd.json'),
                        help='Path to predictions file')
-    parser.add_argument('--gold', type=Path, default=Path('MuSiQue/musique_sample_200_corpus_idx.json'),
-    # parser.add_argument('--gold', type=Path, default=Path('HotpotQA/hotpotqa_sample_200_corpus_idx.json'),
+    # parser.add_argument('--gold', type=Path, default=Path('MuSiQue/musique.json'),
+    parser.add_argument('--gold', type=Path, default=Path('2WikiMultiHopQA/2wiki_qa.json'),
                        help='Path to gold answers file')
-    parser.add_argument('--model', type=str, default='openai/gpt-4o-mini',
-                       help='OpenAI model to use for evaluation')
+    parser.add_argument('--model', type=str, default=MODEL,
+                       help='Chat model to use for evaluation (default: auto-detected from env)')
     parser.add_argument('--max-samples', type=int, default=None,
                        help='Maximum number of samples to evaluate (for testing)')
     
