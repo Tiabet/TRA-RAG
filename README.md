@@ -1,4 +1,4 @@
-## ChunkRAG v2
+## ERA-RAG
 
 This repository contains:
 
