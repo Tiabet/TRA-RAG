@@ -123,7 +123,7 @@ class QueryDecomposition:
 async def decompose_query(
     client: AsyncOpenAI,
     query: str,
-    model: str = "openai/gpt-4o-mini",
+    model: str | None = None,
     temperature: float = 0.0
 ) -> Dict:
     """
@@ -139,6 +139,10 @@ async def decompose_query(
         Dict with 'success', 'decomposition' (QueryDecomposition object), and optional 'error'
     """
     try:
+        if not model:
+            from llm_provider import detect_provider
+            model = detect_provider().chat_model
+
         # Format prompt
         formatted_prompt = QUERY_DECOMPOSITION_PROMPT.replace("__QUESTION__", query)
 
@@ -412,11 +416,10 @@ if __name__ == "__main__":
     
     async def test_decomposition():
         """Test query decomposition with example questions"""
-        
-        client = AsyncOpenAI(
-            api_key=os.getenv('ALICE_OPENAI_KEY'),
-            base_url=os.getenv('ALICE_CHAT_URL')
-        )
+
+        from llm_provider import create_async_chat_client, detect_provider
+        cfg = detect_provider()
+        client = create_async_chat_client(cfg)
         
         # Test cases
         test_queries = [
@@ -435,7 +438,7 @@ if __name__ == "__main__":
             print(f"Test {i}: {query}")
             print('='*80)
             
-            result = await decompose_query(client, query)
+            result = await decompose_query(client, query, model=cfg.chat_model)
             
             if result['success']:
                 decomp = result['decomposition']

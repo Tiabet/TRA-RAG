@@ -58,16 +58,17 @@ def convert_metadata_to_db(
     for qi, item in enumerate(data):
         qid = item.get('_id') or item.get('id') or str(qi)
         for ci, ctx_meta in enumerate(item.get('context_metadata', [])):
-            source_title = ctx_meta.get('title', '')
             # Sometimes metadata is wrapped in 'metadata' key, sometimes it's the object itself
-            # In hotpotqa_sample_200_metadata.json, it seems to be:
-            # { "title": "...", "metadata": { ... } }
+            # In some datasets (e.g., LVEVAL), ctx_meta['title'] can be empty while
+            # the actual title is stored under ctx_meta['metadata']['title'].
             metadata = ctx_meta.get('metadata', ctx_meta)
-            entity_title = (metadata or {}).get('title') or source_title
-            
-            if not source_title:
-                skipped += 1
-                continue
+
+            raw_source_title = ctx_meta.get('title', '')
+            raw_entity_title = (metadata or {}).get('title', '')
+
+            # Prefer metadata.title as the canonical title when available.
+            source_title = raw_entity_title or raw_source_title
+            entity_title = raw_entity_title or raw_source_title
             
             if dedup_by_title and entity_title in processed_titles:
                 continue
@@ -82,6 +83,12 @@ def convert_metadata_to_db(
                     doc_id = f"{qid}::ctx{int(ctx_idx)}"
                 else:
                     doc_id = f"{qid}::ctx{ci}"
+
+            if not source_title:
+                # Keep DB schema constraints (NOT NULL) while still allowing insertion.
+                source_title = f"doc_{doc_id}"
+                if not entity_title:
+                    entity_title = source_title
                 
             try:
                 cursor.execute(
