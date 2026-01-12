@@ -10,7 +10,8 @@ def _read_text(path: Path) -> str:
     try:
         return path.read_text(encoding="utf-8")
     except UnicodeDecodeError:
-        return path.read_text(encoding="cp949")
+        # Avoid locale-specific encodings; fall back to a forgiving UTF-8 decode.
+        return path.read_text(encoding="utf-8", errors="replace")
 
 
 def main() -> int:
