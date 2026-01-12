@@ -5,8 +5,7 @@ Embedding Text Generator
 Converts hierarchical metadata into embedding-ready natural language texts.
 
 Structure: title + key path + value
-Format: "{title}의 {key_path}는 {value}이다" (Korean)
-    or: "The {key_path} of {title} is {value}" (English)
+Format: "The {key_path} of {title} is {value}"
 
 Includes: ALL values (strings, numbers, lists, nested objects)
 """
@@ -19,13 +18,9 @@ from pathlib import Path
 
 class EmbeddingTextGenerator:
     """Generate embedding-ready texts from metadata."""
-    
-    def __init__(self, language: str = "ko"):
-        """
-        Args:
-            language: "ko" for Korean, "en" for English
-        """
-        self.language = language
+
+    def __init__(self):
+        pass
     
     def extract_embedding_texts(self, title: str, metadata: Dict) -> List[Dict]:
         """
@@ -68,21 +63,12 @@ class EmbeddingTextGenerator:
                 
                 relation_type = relation.get('relation', 'related_to')
 
-                # For relations only: if target is a list, emit one fact per target element.
-                target = relation.get('target', None)
-                if isinstance(target, list):
-                    for t in target:
-                        value_dict = relation.copy()
-                        value_dict.pop('relation', None)
-                        value_dict['target'] = t
-                        cleaned_value = self._clean_value(value_dict)
-                        self._add_result(title, [relation_type], cleaned_value, results, is_relation=True)
-                else:
-                    # Default behavior (single target / dict target)
-                    value_dict = relation.copy()
-                    value_dict.pop('relation', None)
-                    cleaned_value = self._clean_value(value_dict)
-                    self._add_result(title, [relation_type], cleaned_value, results, is_relation=True)
+                # v5 DB behavior: keep relations.target list as a single grouped value.
+                # (i.e., one fact per relation, not one fact per target element)
+                value_dict = relation.copy()
+                value_dict.pop('relation', None)
+                cleaned_value = self._clean_value(value_dict)
+                self._add_result(title, [relation_type], cleaned_value, results, is_relation=True)
         
         # Extract top-level fields (excluding wrapper keys)
         skip_keys = {'title', 'attributes', 'relations', 'metadata'}
@@ -197,7 +183,16 @@ class EmbeddingTextGenerator:
             return ", ".join(parts)
         
         elif isinstance(value, list):
-            return ", ".join([self._format_value_natural(item) for item in value])
+            items = [self._format_value_natural(item) for item in value]
+            items = [s for s in items if s is not None and str(s).strip()]
+
+            if len(items) == 0:
+                return ""
+            if len(items) == 1:
+                return items[0]
+            if len(items) == 2:
+                return f"{items[0]} and {items[1]}"
+            return ", ".join(items[:-1]) + f", and {items[-1]}"
         
         else:
             return str(value)
@@ -228,10 +223,7 @@ class EmbeddingTextGenerator:
         key_path_str = ".".join(key_path)
         
         # Generate natural language text
-        if self.language == "ko":
-            text = self._format_korean(title, key_path, value_json)
-        else:
-            text = self._format_english(title, key_path, value, is_relation)
+        text = self._format_english(title, key_path, value, is_relation)
         
         results.append({
             'text': text,
@@ -240,18 +232,10 @@ class EmbeddingTextGenerator:
             'title': title
         })
     
-    def _format_korean(self, title: str, key_path: List[str], value: str) -> str:
-        """Format as Korean natural language."""
-        if len(key_path) == 1:
-            return f"{title}의 {key_path[0]}은/는 {value}이다"
-        else:
-            path_str = "의 ".join(key_path)
-            return f"{title}의 {path_str}은/는 {value}이다"
-    
     def _format_english(self, title: str, key_path: List[str], value: Any, is_relation: bool) -> str:
         """
-        Format as English natural language.
-        
+        Format as natural language.
+
         Attributes: "The {key} of {title} is {formatted_value}"
         Relations: "{title} is {relation} {formatted_value}"
         """
@@ -289,7 +273,6 @@ class EmbeddingTextGenerator:
 def generate_embedding_texts_from_db(
     db_path: str = 'HotpotQA/metadata_v3.db',
     output_path: str = 'HotpotQA/embedding_texts.json',
-    language: str = "ko"
 ) -> List[Dict]:
     """
     Generate embedding texts from metadata database.
@@ -297,8 +280,6 @@ def generate_embedding_texts_from_db(
     Args:
         db_path: Path to metadata_v3.db
         output_path: Path to save embedding texts JSON
-        language: "ko" or "en"
-        
     Returns:
         List of all embedding text entries
     """
@@ -306,7 +287,7 @@ def generate_embedding_texts_from_db(
     print("Generating Embedding Texts from Metadata DB")
     print("="*80)
     
-    generator = EmbeddingTextGenerator(language=language)
+    generator = EmbeddingTextGenerator()
     
     # Connect to database
     conn = sqlite3.connect(db_path)
@@ -372,7 +353,6 @@ def generate_embedding_texts_from_db(
 def generate_embedding_texts_from_json(
     json_path: str = 'HotpotQA/hotpotqa_sample_200_metadata.json',
     output_path: str = 'HotpotQA/embedding_texts.json',
-    language: str = "ko"
 ) -> List[Dict]:
     """
     Generate embedding texts from metadata JSON file (list of QA pairs with context_metadata).
@@ -381,7 +361,7 @@ def generate_embedding_texts_from_json(
     print("Generating Embedding Texts from Metadata JSON")
     print("="*80)
     
-    generator = EmbeddingTextGenerator(language=language)
+    generator = EmbeddingTextGenerator()
     
     with open(json_path, 'r', encoding='utf-8') as f:
         data = json.load(f)
@@ -491,30 +471,18 @@ def test_single_metadata():
     print("\n[Input Metadata]")
     print(json.dumps(sample, indent=2, ensure_ascii=False)[:500] + "...")
     
-    # Test Korean
+    # Test output
     print("\n" + "-"*40)
-    print("[Korean Output]")
+    print("[Output]")
     print("-"*40)
     
-    generator_ko = EmbeddingTextGenerator(language="ko")
-    texts_ko = generator_ko.extract_embedding_texts(sample['title'], sample)
-    
-    for i, entry in enumerate(texts_ko, 1):
-        print(f"{i:2d}. {entry['text']}")
-        print(f"    key_path: {entry['key_path']}, value: {entry['value']}")
-    
-    # Test English
-    print("\n" + "-"*40)
-    print("[English Output]")
-    print("-"*40)
-    
-    generator_en = EmbeddingTextGenerator(language="en")
+    generator_en = EmbeddingTextGenerator()
     texts_en = generator_en.extract_embedding_texts(sample['title'], sample)
     
     for i, entry in enumerate(texts_en, 1):
         print(f"{i:2d}. {entry['text']}")
     
-    print(f"\n[OK] Total texts generated: {len(texts_ko)}")
+    print(f"\n[OK] Total texts generated: {len(texts_en)}")
 
 
 if __name__ == "__main__":
@@ -530,12 +498,10 @@ if __name__ == "__main__":
             generate_embedding_texts_from_json(
                 json_path=json_path,
                 output_path='HotpotQA/embedding_texts.json',
-                language="en"
             )
         else:
             # Fallback to DB
             generate_embedding_texts_from_db(
                 db_path='HotpotQA/metadata_v3.db',
                 output_path='HotpotQA/embedding_texts.json',
-                language="en"
             )

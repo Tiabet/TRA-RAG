@@ -140,6 +140,12 @@ class BM25Indexer:
         with open(embedding_texts_path, 'r', encoding='utf-8') as f:
             self.metadata = json.load(f)
         print(f"   [OK] Loaded {len(self.metadata)} entries")
+
+        if not self.metadata:
+            raise ValueError(
+                f"No entries found in {embedding_texts_path}. "
+                "Upstream metadata->DB conversion or embedding-text generation likely produced an empty output."
+            )
         
         # Build corpus
         print(f"\n2. Building corpus...")
@@ -157,7 +163,13 @@ class BM25Indexer:
         # Tokenize corpus
         print(f"\n3. Tokenizing corpus...")
         corpus_tokens = [self.preprocess(doc) for doc in self.corpus]
-        print(f"   [OK] Tokenized (avg tokens/doc: {sum(len(t) for t in corpus_tokens)/len(corpus_tokens):.1f})")
+        if not corpus_tokens:
+            raise ValueError(
+                "BM25 corpus tokenization produced 0 documents. "
+                "Check embedding_texts.json generation and filtering logic."
+            )
+        avg_tokens = sum(len(t) for t in corpus_tokens) / len(corpus_tokens)
+        print(f"   [OK] Tokenized (avg tokens/doc: {avg_tokens:.1f})")
         
         # Build BM25 index
         print(f"\n4. Building BM25 index...")
@@ -179,7 +191,7 @@ class BM25Indexer:
         # Statistics
         print(f"\n[Statistics]")
         print(f"  Total documents: {len(self.corpus)}")
-        print(f"  Unique titles: {len(set(e['title'] for e in self.metadata))}")
+        print(f"  Unique titles: {len(set((e.get('title') or '') for e in self.metadata if isinstance(e, dict)))}")
         print(f"  Index location: {index_save_path}")
         
         print("\n" + "="*80)

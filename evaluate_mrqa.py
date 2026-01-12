@@ -2,7 +2,7 @@
 """
 MRQA Official Evaluation Metrics
 =================================
-MRQA 공식 평가 메트릭 (Exact Match, F1)을 사용한 평가 스크립트
+Evaluation script using MRQA official metrics (Exact Match, F1).
 
 Usage:
     python evaluate_mrqa.py Results/test_pipeline_v3_original_200_results.json
@@ -14,7 +14,7 @@ import string
 import argparse
 from collections import Counter
 from pathlib import Path
-from typing import List, Tuple, Dict
+from typing import List, Tuple, Dict, Optional, Any
 
 
 # ============================================================
@@ -35,8 +35,13 @@ def normalize_answer(s: str) -> str:
         exclude = set(string.punctuation)
         return ''.join(ch for ch in text if ch not in exclude)
 
-    def lower(text):
+    def lower(text: str) -> str:
         return text.lower()
+
+    if s is None:
+        return ""
+    if not isinstance(s, str):
+        s = str(s)
 
     return white_space_fix(remove_articles(remove_punc(lower(s))))
 
@@ -114,10 +119,13 @@ def compute_metrics_with_aliases(
     best_precision = 0.0
     best_recall = 0.0
     
+    predicted_str = "" if predicted is None else (predicted if isinstance(predicted, str) else str(predicted))
+
     for gold in gold_answers:
-        em = compute_exact_match(gold, predicted)
-        accuracy = compute_accuracy(gold, predicted)
-        f1, precision, recall = compute_f1(gold, predicted)
+        gold_str = "" if gold is None else (gold if isinstance(gold, str) else str(gold))
+        em = compute_exact_match(gold_str, predicted_str)
+        accuracy = compute_accuracy(gold_str, predicted_str)
+        f1, precision, recall = compute_f1(gold_str, predicted_str)
         
         if em > best_em:
             best_em = em
@@ -161,28 +169,42 @@ def extract_gold_answers(item: Dict) -> List[str]:
     """
     gold_answers = []
     
+    def _to_str_or_empty(v: Any) -> str:
+        if v is None:
+            return ""
+        return v if isinstance(v, str) else str(v)
+
     # Primary gold answer
     if "gold_answer" in item:
-        gold_answers.append(item["gold_answer"])
+        gold_answers.append(_to_str_or_empty(item["gold_answer"]))
     elif "answer" in item:
-        gold_answers.append(item["answer"])
+        gold_answers.append(_to_str_or_empty(item["answer"]))
     
     # Answer aliases (if available)
     if "answer_aliases" in item and item["answer_aliases"]:
-        gold_answers.extend(item["answer_aliases"])
+        aliases = item["answer_aliases"]
+        if isinstance(aliases, list):
+            gold_answers.extend(_to_str_or_empty(a) for a in aliases)
+        else:
+            gold_answers.append(_to_str_or_empty(aliases))
     
-    return gold_answers
+    # Drop empty strings produced by None/blank values
+    return [a for a in gold_answers if isinstance(a, str) and a.strip()]
 
 
 def extract_predicted_answer(item: Dict) -> str:
     """Extract predicted answer from result item."""
+    v: Optional[Any] = None
     if "predicted_answer" in item:
-        return item["predicted_answer"]
+        v = item["predicted_answer"]
     elif "prediction" in item:
-        return item["prediction"]
+        v = item["prediction"]
     elif "final_answer" in item:
-        return item["final_answer"]
-    return ""
+        v = item["final_answer"]
+
+    if v is None:
+        return ""
+    return v if isinstance(v, str) else str(v)
 
 
 # ============================================================
@@ -250,7 +272,11 @@ def evaluate(file_path: Path, verbose: bool = False) -> Dict[str, float]:
         
         if verbose:
             status = "✓" if metrics["exact_match"] == 1.0 else ("~" if metrics["f1"] > 0.5 else "✗")
-            print(f"  [{status}] Q{i+1}: EM={metrics['exact_match']:.0f} F1={metrics['f1']:.3f} | Gold: {gold_answers[0][:30]}... | Pred: {predicted[:30]}...")
+            gold0 = gold_answers[0] if gold_answers else ""
+            print(
+                f"  [{status}] Q{i+1}: EM={metrics['exact_match']:.0f} F1={metrics['f1']:.3f} | "
+                f"Gold: {gold0[:30]}... | Pred: {(predicted or '')[:30]}..."
+            )
     
     # Compute averages
     n = len(results)
@@ -289,7 +315,8 @@ def print_results(metrics: Dict[str, float], file_path: Path):
 def main():
     parser = argparse.ArgumentParser(description="MRQA Official Evaluation")
     parser.add_argument("file", type=str, nargs="?", 
-                        default="Results/NaiveRAG/NaiveRAG_passage_No_QD_cot_hotpotqa_k5.json",
+                        # default="Results/naiveRAG/2wiki_naive_noqd_cosine.json",
+                        default="Results\\grid_2wiki_v12_rerun\\2wiki_v12_p10_path50.json",
                         # default = "Results/test_musique_v11_200_results_v51_cot.json",
                         help="Path to result JSON file")
     parser.add_argument("-v", "--verbose", action="store_true",

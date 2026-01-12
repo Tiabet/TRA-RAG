@@ -607,7 +607,7 @@ def evaluate(
                         doc_id_to_title.setdefault(str(corpus_idx), str(title))
         else:
             for item in gold_data:
-                sample_id = item.get('_id')
+                sample_id = item.get('_id') or item.get('id')
                 if not sample_id:
                     continue
                 for ctx_idx, _ctx in enumerate(item.get('context', [])):
@@ -616,7 +616,7 @@ def evaluate(
     # Useful for resolving titles from doc_id when comparing legacy result files.
     if not doc_id_to_title:
         for item in gold_data:
-            sample_id = item.get('_id')
+            sample_id = item.get('_id') or item.get('id')
             if not sample_id:
                 continue
             for ctx_idx, c in enumerate(item.get('context', []) or []):
@@ -723,9 +723,9 @@ def evaluate(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('--result_path', type=str, default ='Results/NaiveRAG/NaiveRAG_passage_QD_cot_musique_k5.json', help='Path to result JSON file')
-    parser.add_argument('--gold_path', type=str, default='MuSiQue/musique_sample_200_corpus_idx.json', help='Path to gold dataset')
-    # parser.add_argument('--gold_path', type=str, default='HotpotQA/hotpotqa_sample_200_corpus_idx.json', help='Path to gold dataset')
+    parser.add_argument('--result_path', type=str, default ='Results/naiveRAG/2wiki_naive_noqd_cosine.json', help='Path to result JSON file')
+    parser.add_argument('--gold_path', type=str, default='2WikiMultihopQA/2wikimultihopqa.json', help='Path to gold dataset')
+    # parser.add_argument('--gold_path', type=str, default='HotpotQA/hotpotqa.json', help='Path to gold dataset')
     parser.add_argument('--key', type=str, default='doc_id', choices=['doc_id', 'title'], help='Evaluation key')
     parser.add_argument('--check_mapping', action='store_true', help='Print title/doc_id mapping diagnostics')
     parser.add_argument('--resolve_titles_from_doc_id', action='store_true', help='When --key title, resolve titles using doc_id->title mapping from gold dataset')
