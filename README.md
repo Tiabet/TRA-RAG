@@ -55,7 +55,21 @@ It builds, per dataset:
 - `path_embeddings_v5.npz` (dense embeddings)
 - `bm25_index_v5/` (BM25 index directory)
 
-Example: build MuSiQue
+This workspace is currently set up to run on the **MuSiQue** dataset.
+
+MuSiQue inputs:
+
+- `MuSiQue/musique.json`
+
+MuSiQue outputs (v5 artifacts):
+
+- `MuSiQue/metadata_v5.json`
+- `MuSiQue/metadata_v5.db`
+- `MuSiQue/embedding_texts_v5.json`
+- `MuSiQue/path_embeddings_v5.npz`
+- `MuSiQue/bm25_index_v5/`
+
+Build MuSiQue artifacts:
 
 ```bash
 python setup_indices_v5.py --dataset musique
@@ -79,6 +93,12 @@ python setup_indices_v5.py --dataset musique --dry_run_metadata
 
 The runner is `test_pipeline_paths_hint_expansion.py`.
 
+MuSiQue retrieval-only smoke test (no LLM calls):
+
+```bash
+python test_pipeline_paths_hint_expansion.py --dataset musique --no_llm --limit 20
+```
+
 Retrieval-only (no LLM calls):
 
 ```bash
@@ -93,7 +113,7 @@ python test_pipeline_paths_hint_expansion.py --dataset musique --concurrency 20
 
 Outputs are written to:
 
-- `Results/<dataset>_result.json`
+- `Results/musique_result.json`
 
 Override artifact paths:
 
