@@ -4,7 +4,7 @@ BUILD_HYPEREDGE_PROMPT = """
 You are an advanced Knowledge Engineer specializing in Hypergraph construction. Your task is to extract complex relations from the text in the form of HyperEdges.
 
 ### Definition: HyperEdge
-Unlike a standard Triplet (S-P-O), a HyperEdge can connect multiple entities and include contextual attributes within a single relationship. 
+Unlike a standard Triplet (S-P-O), a HyperEdge can connect multiple entities and include contextual attributes within a single relationship.
 - Format: { "relation": "...", "participants": { "role1": "entity1", "role2": "entity2", ... }, "context": { "time": "...", "location": "...", "attribute": "..." } }
 
 ### Extraction Guidelines
