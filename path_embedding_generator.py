@@ -29,21 +29,10 @@ class PathEmbeddingGenerator:
         """
         load_dotenv()
         
-        self.api_key = os.getenv('ALICE_OPENAI_KEY')
-        # Use EMBED_URL for embeddings
-        self.base_url = os.getenv('ALICE_EMBED_URL')
-        
-        if not self.api_key:
-            raise ValueError("ALICE_OPENAI_KEY not found in environment")
-        if not self.base_url:
-            raise ValueError("ALICE_EMBED_URL not found in environment")
-        
-        self.client = AsyncOpenAI(
-            api_key=self.api_key,
-            base_url=self.base_url
-        )
-        
-        self.model = "text-embedding-3-small"
+        from llm_provider import create_async_embed_client, detect_provider
+        cfg = detect_provider()
+        self.client = create_async_embed_client(cfg)
+        self.model = cfg.embed_model
         self.batch_size = batch_size
         self.max_concurrency = max_concurrency
         self.embedding_dim = 1536  # text-embedding-3-small dimension
