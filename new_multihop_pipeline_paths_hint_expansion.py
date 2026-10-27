@@ -793,9 +793,11 @@ class NewMultihopPipelineV12PathsHintExpansion(NewMultihopPipelineV11PathsHint):
 		final_rerank_mode: str = 'minmax',
 		sq_fusion_method: str = 'rrf',
 		final_selection_mode: str = 'rerank',
+		budget_profile: str = 'main',
 		**kwargs,
 	):
 		super().__init__(*args, **kwargs)
+		self.configure_budget_profile(budget_profile)
 		# SQ retrieval fusion (ablation toggle): rrf/minmax/bm25/dense
 		self.fusion_method = str(sq_fusion_method or 'rrf').lower().strip()
 		self.seed_k = int(seed_k)
@@ -810,6 +812,17 @@ class NewMultihopPipelineV12PathsHintExpansion(NewMultihopPipelineV11PathsHint):
 		# - rerank: seed + rerank (default)
 		# - rrf_only: skip rerank; fill using SQ path scores only
 		self.final_selection_mode = str(final_selection_mode or 'rerank').lower().strip()
+
+	def configure_budget_profile(self, profile: str) -> None:
+		"""Table 5 uses different seed allocations from Section 4.4 main runs."""
+		if profile not in ('main', 'table5'):
+			raise ValueError('Unknown budget profile: ' + profile)
+		self.budget_profile = profile
+		self._PASSAGE_SEED_RERANK = dict(type(self)._PASSAGE_SEED_RERANK)
+		self._PATH_SEED_RERANK = dict(type(self)._PATH_SEED_RERANK)
+		if profile == 'table5':
+			self._PASSAGE_SEED_RERANK = {0: (0, 0), 3: (1, 2), 5: (2, 3), 10: (4, 6)}
+			self._PATH_SEED_RERANK = {0: (0, 0), 10: (4, 6), 30: (10, 20), 50: (20, 30)}
 
 	def _path_from_retriever_index(self, idx: int, score: float, origin: str) -> Dict:
 		"""Build a path dict from the underlying retriever arrays."""
