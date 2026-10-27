@@ -106,7 +106,7 @@ class BM25Indexer:
 
         Note: We still apply stopword removal during tokenization in `preprocess()`.
         This function exists to satisfy the requirement of stripping stopwords
-        from embedding_texts.json's `text` field before BM25 indexing.
+        from facts.json's `text` field before BM25 indexing.
         """
         if not text:
             return ""
@@ -119,7 +119,7 @@ class BM25Indexer:
     
     def build_index(
         self,
-        embedding_texts_path: str = 'HotpotQA/embedding_texts.json',
+        embedding_texts_path: str = 'HotpotQA/facts.json',
         index_save_path: str = 'HotpotQA/bm25_index',
         use_embedding_text_field: bool = False,
         strip_stopwords_in_embedding_text: bool = False
@@ -128,7 +128,7 @@ class BM25Indexer:
         Build BM25 index from embedding texts.
         
         Args:
-            embedding_texts_path: Path to embedding_texts.json
+            embedding_texts_path: Path to facts.json
             index_save_path: Directory to save index
         """
         print("="*80)
@@ -166,7 +166,7 @@ class BM25Indexer:
         if not corpus_tokens:
             raise ValueError(
                 "BM25 corpus tokenization produced 0 documents. "
-                "Check embedding_texts.json generation and filtering logic."
+                "Check facts.json generation and filtering logic."
             )
         avg_tokens = sum(len(t) for t in corpus_tokens) / len(corpus_tokens)
         print(f"   [OK] Tokenized (avg tokens/doc: {avg_tokens:.1f})")
@@ -316,6 +316,6 @@ if __name__ == "__main__":
         # Build index
         indexer = BM25Indexer(use_stemming=True)
         indexer.build_index(
-            embedding_texts_path='HotpotQA/embedding_texts.json',
+            embedding_texts_path='HotpotQA/facts.json',
             index_save_path='HotpotQA/bm25_index'
         )

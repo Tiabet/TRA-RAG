@@ -6,15 +6,25 @@ import sqlite3
 from pathlib import Path
 from unittest.mock import AsyncMock
 
-from new_multihop_pipeline_paths_hint_expansion import NewMultihopPipelineV12PathsHintExpansion
+from tra_pipeline import TRAPipeline
 from run_simple_qa import answer_direct
-from embedding_text_generator import EmbeddingTextGenerator, generate_embedding_texts_from_db
-from hybrid_path_retriever import HybridPathRetriever
-from setup_indices_v5 import validate_granularity
+from fact_serialization import FactSerializer, generate_embedding_texts_from_db
+from hybrid_retriever import HybridFactRetriever
+from build_indices import DATASETS, _paths_for_dataset, validate_granularity
+from fact_embeddings import FactEmbeddingGenerator
 from query_decomposition import QueryDecomposition, SubQuestion, get_execution_order, substitute_answers
 
 
 class ReleaseTests(unittest.TestCase):
+    def test_descriptive_artifact_names(self):
+        paths = _paths_for_dataset(DATASETS['musique'], Path('workspace'))
+        self.assertEqual(paths['metadata_json'].name, 'metadata.json')
+        self.assertEqual(paths['db'].name, 'metadata.db')
+        self.assertEqual(paths['embedding_texts'].name, 'facts.json')
+        self.assertEqual(paths['embeddings'].name, 'fact_embeddings.npz')
+        self.assertEqual(paths['bm25_index'].name, 'bm25_index')
+        self.assertTrue(callable(FactEmbeddingGenerator.generate_embeddings))
+
     def test_db_fact_generation_keeps_source_ids_and_nested_values(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -34,7 +44,7 @@ class ReleaseTests(unittest.TestCase):
             self.assertIn('Bob', facts[0]['text'])
 
     def test_weighted_rrf_uses_rank_not_raw_score(self):
-        retriever = object.__new__(HybridPathRetriever)
+        retriever = object.__new__(HybridFactRetriever)
         retriever.bm25_weight, retriever.dense_weight, retriever.rrf_k = 1.0, 1.3, 60
         retriever.search_bm25 = lambda query, k: [(0, 100000), (1, 1)]
         retriever.search_dense = AsyncMock(return_value=[(1, 0.9), (0, 0.8)])
@@ -50,12 +60,12 @@ class ReleaseTests(unittest.TestCase):
 
     def test_whole_list_preserved_and_legacy_mode_available(self):
         metadata = {'attributes': {'cast': [{'name': 'Alice', 'role': 'Lead'}, {'name': 'Bob', 'role': 'Guest'}]}}
-        facts = EmbeddingTextGenerator().extract_embedding_texts('Film', metadata)
+        facts = FactSerializer().extract_embedding_texts('Film', metadata)
         self.assertEqual(len(facts), 1)
         self.assertEqual(facts[0]['key_path'], 'cast')
         self.assertIn('Alice', facts[0]['text'])
         self.assertIn('Bob', facts[0]['text'])
-        legacy = EmbeddingTextGenerator('legacy_items').extract_embedding_texts('Film', metadata)
+        legacy = FactSerializer('legacy_items').extract_embedding_texts('Film', metadata)
         self.assertEqual(len(legacy), 2)
 
     def test_index_mode_mismatch_rejected(self):
@@ -73,8 +83,8 @@ class ReleaseTests(unittest.TestCase):
                 validate_granularity(paths, manifest, 'legacy_items')
 
     def test_main_and_table5_allocations_are_isolated(self):
-        main = object.__new__(NewMultihopPipelineV12PathsHintExpansion)
-        grid = object.__new__(NewMultihopPipelineV12PathsHintExpansion)
+        main = object.__new__(TRAPipeline)
+        grid = object.__new__(TRAPipeline)
         main.configure_budget_profile('main')
         grid.configure_budget_profile('table5')
         self.assertEqual(main._PASSAGE_SEED_RERANK[5], (3, 2))
@@ -92,7 +102,7 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual(substitute_answers(second.question, [first]), 'Which city in Pima?')
 
     def test_paper_candidate_budget(self):
-        pipeline = object.__new__(NewMultihopPipelineV12PathsHintExpansion)
+        pipeline = object.__new__(TRAPipeline)
         pipeline.retrieval_candidates = 300
         pipeline.fusion_method = 'rrf'
         pipeline.retriever = type('Retriever', (), {'search_hybrid': AsyncMock(return_value=[])})()
@@ -122,7 +132,7 @@ class ReleaseTests(unittest.TestCase):
         self.assertIsNone(result['predicted_answer'])
 
     def test_nested_attribute_and_grouped_relation_preserved(self):
-        facts = EmbeddingTextGenerator().extract_embedding_texts('Book', {
+        facts = FactSerializer().extract_embedding_texts('Book', {
             'attributes': {'author': {'name': 'Ion', 'nationality': 'Romanian'}},
             'relations': [{'relation': 'features', 'target': ['Goat', 'Wolf']}],
         })

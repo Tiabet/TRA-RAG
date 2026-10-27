@@ -16,7 +16,7 @@ from typing import List, Dict, Any, Tuple
 from pathlib import Path
 
 
-class EmbeddingTextGenerator:
+class FactSerializer:
     """Generate embedding-ready texts from metadata."""
 
     def __init__(self, fact_granularity: str = 'top_level'):
@@ -65,7 +65,7 @@ class EmbeddingTextGenerator:
                 
                 relation_type = relation.get('relation', 'related_to')
 
-                # v5 DB behavior: keep relations.target list as a single grouped value.
+                # Grouped relation behavior: keep relations.target list as a single grouped value.
                 # (i.e., one fact per relation, not one fact per target element)
                 value_dict = relation.copy()
                 value_dict.pop('relation', None)
@@ -273,15 +273,15 @@ class EmbeddingTextGenerator:
 
 
 def generate_embedding_texts_from_db(
-    db_path: str = 'HotpotQA/metadata_v3.db',
-    output_path: str = 'HotpotQA/embedding_texts.json',
+    db_path: str = 'HotpotQA/metadata.db',
+    output_path: str = 'HotpotQA/facts.json',
     fact_granularity: str = 'top_level',
 ) -> List[Dict]:
     """
     Generate embedding texts from metadata database.
     
     Args:
-        db_path: Path to metadata_v3.db
+        db_path: Path to metadata.db
         output_path: Path to save embedding texts JSON
     Returns:
         List of all embedding text entries
@@ -290,7 +290,7 @@ def generate_embedding_texts_from_db(
     print("Generating Embedding Texts from Metadata DB")
     print("="*80)
     
-    generator = EmbeddingTextGenerator(fact_granularity=fact_granularity)
+    generator = FactSerializer(fact_granularity=fact_granularity)
     
     # Connect to database
     conn = sqlite3.connect(db_path)
@@ -302,7 +302,7 @@ def generate_embedding_texts_from_db(
     try:
         cursor.execute("SELECT doc_id, source_title, entity_title, metadata_json FROM metadata")
         rows = cursor.fetchall()
-        schema_mode = "v2"
+        schema_mode = "doc_id"
     except Exception:
         cursor.execute("SELECT title, metadata_json FROM metadata")
         rows = cursor.fetchall()
@@ -313,7 +313,7 @@ def generate_embedding_texts_from_db(
     all_texts = []
     
     for idx, row in enumerate(rows):
-        if schema_mode == "v2":
+        if schema_mode == "doc_id":
             doc_id = row['doc_id']
             source_title = row['source_title']
             entity_title = row['entity_title']
@@ -355,7 +355,7 @@ def generate_embedding_texts_from_db(
 
 def generate_embedding_texts_from_json(
     json_path: str = 'HotpotQA/hotpotqa_sample_200_metadata.json',
-    output_path: str = 'HotpotQA/embedding_texts.json',
+    output_path: str = 'HotpotQA/facts.json',
     fact_granularity: str = 'top_level',
 ) -> List[Dict]:
     """
@@ -365,7 +365,7 @@ def generate_embedding_texts_from_json(
     print("Generating Embedding Texts from Metadata JSON")
     print("="*80)
     
-    generator = EmbeddingTextGenerator(fact_granularity=fact_granularity)
+    generator = FactSerializer(fact_granularity=fact_granularity)
     
     with open(json_path, 'r', encoding='utf-8') as f:
         data = json.load(f)
@@ -480,7 +480,7 @@ def test_single_metadata():
     print("[Output]")
     print("-"*40)
     
-    generator_en = EmbeddingTextGenerator()
+    generator_en = FactSerializer()
     texts_en = generator_en.extract_embedding_texts(sample['title'], sample)
     
     for i, entry in enumerate(texts_en, 1):
@@ -501,11 +501,11 @@ if __name__ == "__main__":
         if os.path.exists(json_path):
             generate_embedding_texts_from_json(
                 json_path=json_path,
-                output_path='HotpotQA/embedding_texts.json',
+                output_path='HotpotQA/facts.json',
             )
         else:
             # Fallback to DB
             generate_embedding_texts_from_db(
-                db_path='HotpotQA/metadata_v3.db',
-                output_path='HotpotQA/embedding_texts.json',
+                db_path='HotpotQA/metadata.db',
+                output_path='HotpotQA/facts.json',
             )

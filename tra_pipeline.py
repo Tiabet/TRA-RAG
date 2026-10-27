@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
-"""New Multi-hop Pipeline v12 (Paths-as-Hints) — Final Reranking (Simplified)
+"""TRA-RAG Multi-hop Pipeline with Final Reranking
 
 This version follows a user-defined policy where "Final = reranking/selection" to produce the final passages/paths.
 The Final stage does not use a separate 2-stage expansion (embedding neighbor + second-stage RRF).
 
 - SQ stage: same as before (query decomposition → per-subquestion hybrid retrieval to collect paths/passages)
-	- Hybrid fusion (e.g., RRF) uses the existing `HybridPathRetriever` implementation
+	- Hybrid fusion (e.g., RRF) uses the existing `HybridFactRetriever` implementation
 	- This file uses a min-max scaled hybrid score only for Final reranking; SQ-stage retrieval keeps RRF by default
 
 - Final stage (fixed size, all unique):
@@ -24,7 +24,7 @@ The Final stage does not use a separate 2-stage expansion (embedding neighbor + 
 		- Rerank passages (2): add top-2 unique passages by max(path score)
 	5) Final: passages=5 (unique), paths=30 (unique)
 
-The output format is kept compatible with v11 so it works with the existing `evaluate_*` scripts.
+The output format is kept compatible with historical results so it works with the existing `evaluate_*` scripts.
 """
 
 import asyncio
@@ -39,7 +39,7 @@ import numpy as np
 
 from openai import AsyncOpenAI
 
-from hybrid_path_retriever import HybridPathRetriever
+from hybrid_retriever import HybridFactRetriever
 from llm_logger import log_llm_call
 
 
@@ -49,27 +49,27 @@ if TYPE_CHECKING:
 
 
 def _default_artifact_paths(dataset: str) -> Dict[str, str]:
-	# Keep this helper local so the v12 runner/test scripts don’t depend on extra modules.
+	# Keep this helper local so the multi-hop runners don’t depend on extra modules.
 	if dataset == 'musique':
 		return {
 			'data_path': 'MuSiQue/musique.json',
-			'db_path': 'MuSiQue/metadata_v5.db',
-			'bm25_index_path': 'MuSiQue/bm25_index_v5',
-			'embeddings_path': 'MuSiQue/path_embeddings_v5.npz',
+			'db_path': 'MuSiQue/metadata.db',
+			'bm25_index_path': 'MuSiQue/bm25_index',
+			'embeddings_path': 'MuSiQue/fact_embeddings.npz',
 		}
 	if dataset == 'hotpot':
 		return {
 			'data_path': 'HotpotQA/hotpotqa.json',
-			'db_path': 'HotpotQA/metadata_v5.db',
-			'bm25_index_path': 'HotpotQA/bm25_index_v5',
-			'embeddings_path': 'HotpotQA/path_embeddings_v5.npz',
+			'db_path': 'HotpotQA/metadata.db',
+			'bm25_index_path': 'HotpotQA/bm25_index',
+			'embeddings_path': 'HotpotQA/fact_embeddings.npz',
 		}
 	if dataset == '2wiki':
 		return {
 			'data_path': '2WikiMultihopQA/2wikimultihopqa.json',
-			'db_path': '2WikiMultihopQA/metadata_v5.db',
-			'bm25_index_path': '2WikiMultihopQA/bm25_index_v5',
-			'embeddings_path': '2WikiMultihopQA/path_embeddings_v5.npz',
+			'db_path': '2WikiMultihopQA/metadata.db',
+			'bm25_index_path': '2WikiMultihopQA/bm25_index',
+			'embeddings_path': '2WikiMultihopQA/fact_embeddings.npz',
 		}
 	if dataset == 'lveval':
 		# Note: LVEVAL has two relevant inputs:
@@ -77,9 +77,9 @@ def _default_artifact_paths(dataset: str) -> Dict[str, str]:
 		# - lveval_corpus_for_pipeline.json: QA-like wrapper over corpus (used for indexing)
 		return {
 			'data_path': 'LVEVAL/lveval_qa_compact.json',
-			'db_path': 'LVEVAL/metadata_v5.db',
-			'bm25_index_path': 'LVEVAL/bm25_index_v5',
-			'embeddings_path': 'LVEVAL/path_embeddings_v5.npz',
+			'db_path': 'LVEVAL/metadata.db',
+			'bm25_index_path': 'LVEVAL/bm25_index',
+			'embeddings_path': 'LVEVAL/fact_embeddings.npz',
 		}
 	raise ValueError(f"Unknown dataset: {dataset}. Expected one of: musique, hotpot, 2wiki, lveval")
 
@@ -110,15 +110,15 @@ def _json_default(obj):
 	return str(obj)
 
 
-class NewMultihopPipelineV11PathsHint:
+class BaseQAPipeline:
 	"""Pipeline using hybrid retrieval + original passages + top path hints for SQ answering."""
 
 	def __init__(
 		self,
 		client: AsyncOpenAI,
-		retriever: HybridPathRetriever,
+		retriever: HybridFactRetriever,
 		hotpotqa_path: str = 'HotpotQA/hotpotqa.json',
-		db_path: str = 'HotpotQA/metadata_v4aligned.db',
+		db_path: str = 'HotpotQA/metadata.db',
 		top_k_passages: int = 5,
 		top_k_paths: int = 30,
 		answer_k_passages: int | None = None,
@@ -598,7 +598,7 @@ class NewMultihopPipelineV11PathsHint:
 		answer_raw = (response.choices[0].message.content or '').strip()
 
 		log_llm_call(
-			call_type="Subquestion Answering (V11-PathsHint)",
+			call_type="Subquestion Answering",
 			input_text=prompt,
 			output_text=answer_raw,
 			context={
@@ -751,7 +751,7 @@ class NewMultihopPipelineV11PathsHint:
 			}
 
 
-class NewMultihopPipelineV12PathsHintExpansion(NewMultihopPipelineV11PathsHint):
+class TRAPipeline(BaseQAPipeline):
 	# Default seed/rerank split policy for ablations.
 	# These are the EXACT ratios requested for the 2wiki grid experiments.
 	_PASSAGE_SEED_RERANK = {
@@ -843,7 +843,7 @@ class NewMultihopPipelineV12PathsHintExpansion(NewMultihopPipelineV11PathsHint):
 	def _second_stage_rrf_scores(self, seed_paths: List[Dict], candidate_indices: List[int]) -> Dict[int, float]:
 		"""Compute RRF aggregation scores over dense-neighbor ranks for each seed path.
 
-		IMPORTANT (v12 restricted expansion):
+		IMPORTANT (restricted expansion):
 		- We only consider candidates that appeared during SQ answering (i.e., paths in decomposition).
 		- This avoids introducing brand-new paths from the global index at final time.
 		"""
@@ -1009,7 +1009,7 @@ class NewMultihopPipelineV12PathsHintExpansion(NewMultihopPipelineV11PathsHint):
 	) -> Dict[int, float]:
 		"""Score a restricted set of path indices against a query.
 
-		We reuse the existing HybridPathRetriever logic.
+		We reuse the existing HybridFactRetriever logic.
 		- rrf: uses score_candidates_rrf (rank fusion within candidates)
 		- minmax: uses the same scoring core as search_hybrid, but restricted to candidates
 		"""
@@ -1638,7 +1638,7 @@ class NewMultihopPipelineV12PathsHintExpansion(NewMultihopPipelineV11PathsHint):
 		answer_raw = (response.choices[0].message.content or '').strip()
 
 		log_llm_call(
-			call_type="Final Answer Synthesis (V12-PathsHint-Rerank)",
+			call_type="Final Answer Synthesis (Reranked)",
 			input_text=prompt,
 			output_text=answer_raw,
 			context={
@@ -1654,7 +1654,7 @@ class NewMultihopPipelineV12PathsHintExpansion(NewMultihopPipelineV11PathsHint):
 		return answer_raw
 
 	async def process_question(self, question: str) -> Dict:
-		"""Override v11 to await async final selection."""
+		"""Override the base implementation to await async final selection."""
 		t0_total = time.perf_counter()
 
 		qd_s = 0.0
@@ -1884,14 +1884,14 @@ async def run_small_batch(
 		cfg = detect_provider()
 		client = create_async_chat_client(cfg)
 
-	retriever = HybridPathRetriever(
+	retriever = HybridFactRetriever(
 		bm25_weight=0.6,
 		dense_weight=0.4,
 		bm25_index_path=bm25_index_path,
 		embeddings_path=embeddings_path,
 	)
 
-	pipeline = NewMultihopPipelineV12PathsHintExpansion(
+	pipeline = TRAPipeline(
 		client=client,  # type: ignore[arg-type]
 		retriever=retriever,
 		hotpotqa_path=data_path,
@@ -1911,7 +1911,7 @@ async def run_small_batch(
 
 	results: List[Dict] = []
 	n = len(gold) if limit is None else min(int(limit), len(gold))
-	print(f'[run_small_batch:v12] dataset={dataset} examples={n} output={output_path}')
+	print(f'[run_small_batch] dataset={dataset} examples={n} output={output_path}')
 	print(f'  data_path={data_path}')
 	print(f'  db_path={db_path}')
 	print(f'  bm25_index_path={bm25_index_path}')
@@ -1996,7 +1996,7 @@ def main():
 	import argparse
 
 	parser = argparse.ArgumentParser(
-		description='Run v12 paths-as-hints + fact expansion pipeline on a small batch (v5 artifacts).'
+		description='Run TRA-RAG with Fact expansion on a small batch.'
 	)
 	parser.add_argument('--dataset', choices=['musique', 'hotpot', '2wiki', 'lveval'], required=True)
 	parser.add_argument('--output', type=str, default='')
@@ -2024,7 +2024,7 @@ def main():
 	db_path = args.db_path or defaults['db_path']
 	bm25_index_path = args.bm25_index_path or defaults['bm25_index_path']
 	embeddings_path = args.embeddings_path or defaults['embeddings_path']
-	output_path = args.output or f"Results/smoke_v12_{args.dataset}_v5_all.json"
+	output_path = args.output or f"Results/{args.dataset}_smoke.json"
 
 	asyncio.run(
 		run_small_batch(

@@ -26,13 +26,13 @@ import Stemmer
 from llm_provider import create_async_embed_client, detect_provider
 
 
-class HybridPathRetriever:
+class HybridFactRetriever:
     """Hybrid retriever combining BM25 and dense embeddings."""
     
     def __init__(
         self,
         bm25_index_path: str = 'HotpotQA/bm25_index',
-        embeddings_path: str = 'HotpotQA/path_embeddings.npz',
+        embeddings_path: str = 'HotpotQA/fact_embeddings.npz',
         bm25_weight: float = 0.5,
         dense_weight: float = 0.5,
         rrf_k: int = 60,
@@ -492,7 +492,7 @@ async def test_hybrid_search():
     print("Testing Hybrid Path Retriever")
     print("="*80)
     
-    retriever = HybridPathRetriever(
+    retriever = HybridFactRetriever(
         bm25_weight=0.4,
         dense_weight=0.6
     )

@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Prepare LVEVAL inputs for ChunkRAG v5 pipeline.
+"""Prepare LVEVAL inputs for TRA-RAG pipeline.
 
 LVEVAL provides:
 - LVEVAL/lveval_corpus.json: global corpus list[{idx,title,text}, ...]
 - LVEVAL/lveval.json: QA list[dict] where `context` is a huge string with '### Passage N' blocks
 
-Our v5 indexing pipeline expects a QA-like JSON where passages are provided via
+The indexing pipeline expects a QA-like JSON where passages are provided via
 `paragraphs` or `context` with stable `corpus_idx`.
 
 This module generates:

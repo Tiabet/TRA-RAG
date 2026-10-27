@@ -5,9 +5,9 @@ import json
 from pathlib import Path
 
 from dotenv import load_dotenv
-from hybrid_path_retriever import HybridPathRetriever
+from hybrid_retriever import HybridFactRetriever
 from llm_provider import create_async_chat_client, detect_provider
-from new_multihop_pipeline_paths_hint_expansion import NewMultihopPipelineV12PathsHintExpansion
+from tra_pipeline import TRAPipeline
 from query_decomposition import QueryDecomposition
 
 
@@ -67,14 +67,14 @@ async def run(args):
         data = data[:args.limit]
     cfg = detect_provider()
     client = None if args.retrieval_only else create_async_chat_client(cfg)
-    retriever = HybridPathRetriever(
-        bm25_index_path=str(directory / 'bm25_index_v5'),
-        embeddings_path=str(directory / 'path_embeddings_v5.npz'),
+    retriever = HybridFactRetriever(
+        bm25_index_path=str(directory / 'bm25_index'),
+        embeddings_path=str(directory / 'fact_embeddings.npz'),
         bm25_weight=1.0, dense_weight=1.3,
     )
-    pipeline = NewMultihopPipelineV12PathsHintExpansion(
+    pipeline = TRAPipeline(
         client=client, retriever=retriever, hotpotqa_path=str(corpus),
-        db_path=str(directory / 'metadata_v5.db'), use_previous_context=False,
+        db_path=str(directory / 'metadata.db'), use_previous_context=False,
         chat_model=cfg.chat_model, retrieval_candidates=300, verbose=False,
     )
     results = []

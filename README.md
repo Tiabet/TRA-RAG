@@ -48,13 +48,51 @@ build them before running QA. The following workflow uses the included MuSiQue i
 ## Build MuSiQue indices
 
 ```bash
-python setup_indices_v5.py --dataset musique
+python build_indices.py --dataset musique
 ```
 
 The model defaults to the configured provider's model; `--model` overrides it.
-Outputs under `MuSiQue/`: `metadata_v5.json`, `metadata_v5.db`,
-`embedding_texts_v5.json`, `path_embeddings_v5.npz`, `bm25_index_v5/`.
+Outputs under `MuSiQue/`: `metadata.json`, `metadata.db`,
+`facts.json`, `fact_embeddings.npz`, `bm25_index/`.
 Existing artifacts are reused; `--rebuild` overwrites them.
+
+### Naming and existing artifacts
+
+Source filenames now describe their role rather than an experiment version:
+
+| Previous module | Current module |
+|---|---|
+| `setup_indices_v5.py` | `build_indices.py` |
+| `prepare_lveval_v5.py` / `prepare_singlehop_v5.py` | `prepare_lveval.py` / `prepare_singlehop.py` |
+| `new_multihop_pipeline_paths_hint_expansion.py` | `tra_pipeline.py` |
+| `test_pipeline_paths_hint_expansion.py` | `multihop_runner.py` (public CLI: `run_multihop_qa.py`) |
+| `setup_hotpotqa_db.py` | `metadata_database.py` |
+| `embedding_text_generator.py` / `path_embedding_generator.py` | `fact_serialization.py` / `fact_embeddings.py` |
+| `hybrid_path_retriever.py` | `hybrid_retriever.py` |
+| `llm_evaluation.py` / `upper_bound_experiment.py` | `evaluate_answers_llm.py` / `run_oracle.py` |
+| `run_2wiki_reviewer_sensitivity.py` | `run_2wiki_sensitivity.py` |
+
+Update external imports to the new module names. The main classes are now
+`TRAPipeline`, `FactSerializer`, `FactEmbeddingGenerator`, and `HybridFactRetriever`.
+Existing local files are **not automatically renamed or deleted**. To run QA on
+older indices, pass their original paths explicitly:
+
+```bash
+python run_multihop_qa.py --dataset musique --db_path MuSiQue/metadata_v5.db --bm25_index_path MuSiQue/bm25_index_v5 --embeddings_path MuSiQue/path_embeddings_v5.npz
+```
+
+For reuse by the index builder, first back up and rename the complete artifact set:
+`metadata_v5.json` → `metadata.json`, `metadata_v5.db` → `metadata.db`,
+`embedding_texts_v5.json` → `facts.json`, `path_embeddings_v5.npz` → `fact_embeddings.npz`,
+`path_embeddings_v5_index.json` → `fact_embeddings_index.json`, and
+`bm25_index_v5/` → `bm25_index/`. Do not overwrite existing destinations.
+Keep `index_manifest.json` with the matching set; renaming does not change Fact
+granularity. Unmanifested historical indices require `--fact_granularity legacy_items`.
+Without migration, the builder uses the new names and may generate fresh artifacts
+with API costs. Result JSON keys, CLI options such as `--top_k_paths`, and the
+historical `pipeline_version` value remain unchanged for compatibility.
+The sensitivity and answer-bearing diagnostics retain historical cached-result
+filenames because they refer to existing external experiment outputs.
 
 New indices default to `--fact_granularity top_level`, matching Section 3.2:
 one Fact contains a title, a top-level key, and its complete value, including lists.
@@ -75,8 +113,8 @@ Defaults: RRF k=60, sparse/dense weights 1.0/1.3, 300 candidates per retriever,
 50 retained SQ Facts, final 3 seed + 2 reranked passages and 20 seed + 10 reranked Facts.
 Override inputs with `--data_path`, `--corpus_path`, `--db_path`,
 `--bm25_index_path`, `--embeddings_path`. Use `--corpus_path` when questions and
-corpus records are separate. The original experiment runner
-`test_pipeline_paths_hint_expansion.py` remains supported.
+corpus records are separate. The shared runner implementation is in
+`multihop_runner.py`.
 
 Optional no-QD comparison on the included MuSiQue input (direct RRF and one final answer call):
 
@@ -96,7 +134,7 @@ null and must not be used to report QA accuracy.
 ```bash
 python evaluate_mrqa.py Results/musique_result.json
 python evaluate_retrieval.py --result_path Results/musique_result.json --gold_path MuSiQue/musique.json --gold_id corpus_idx --at_k 5
-python llm_evaluation.py --pred Results/musique_result.json --gold MuSiQue/musique.json
+python evaluate_answers_llm.py --pred Results/musique_result.json --gold MuSiQue/musique.json
 ```
 
 Choose the ID scheme matching the gold data. LLM evaluation calls an API.
@@ -118,8 +156,8 @@ Section 4.4 and Table 5 have different seed allocations. The default
 
 Remaining slots use reranking. `--retrieval_candidates` (default 300) and `--rrf_k`
 (default 60) are explicit and recorded in multi-hop result configurations.
-`run_2wiki_reviewer_sensitivity.py` requires original cached QD results and artifacts.
-`upper_bound_experiment.py` and `compare_2wiki_triplets_vs_metadata.py` retain
+`run_2wiki_sensitivity.py` requires original cached QD results and artifacts.
+`run_oracle.py` and `compare_2wiki_triplets_vs_metadata.py` retain
 Oracle and structural-comparison utilities. Consult their `--help` first.
 
 ```bash
@@ -137,8 +175,8 @@ The code retains adapters for HotpotQA, 2WikiMultiHopQA, LV-Eval, NQ and PopQA.
 Their data must be obtained and prepared separately; selecting a dataset name does
 not download it. Do not run `--dataset all` on a fresh clone containing only MuSiQue.
 
-`prepare_singlehop_v5.py` expects pre-existing NQ/PopQA inputs in the local
-experiment's HippoRAG2-style format. `prepare_lveval_v5.py` likewise expects external
+`prepare_singlehop.py` expects pre-existing NQ/PopQA inputs in the local
+experiment's HippoRAG2-style format. `prepare_lveval.py` likewise expects external
 LV-Eval files. Neither is a required step in the MuSiQue workflow above.
 The published experiments use repaired NQ and canonical/deduplicated PopQA;
 adapters alone do not supply those exact experiment inputs.
