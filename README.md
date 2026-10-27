@@ -29,37 +29,30 @@ Copy `.env.example` to `.env` and set credentials. Direct OpenAI and an
 OpenAI-compatible ALICE gateway are supported. ALICE takes precedence if both are set.
 Index construction, query embeddings, answering, and LLM judging may incur API costs.
 
-## Data and indexing
+## Included data: MuSiQue only
 
-Preserve document IDs across QA, corpus, metadata, and indices.
+**This repository includes only MuSiQue data.** The paper evaluates six benchmarks,
+but HotpotQA, 2WikiMultiHopQA, LV-Eval, NQ and PopQA data are **not included**.
+Dataset names accepted by the scripts indicate code support, not bundled data.
 
-| Dataset | Indexing input | Question input | QA mode |
-|---|---|---|---|
-| HotpotQA | `HotpotQA/hotpotqa.json` | same, with context | multi-hop `hotpot` |
-| MuSiQue | `MuSiQue/musique.json` | same, with paragraphs | multi-hop `musique` |
-| 2Wiki | `2WikiMultihopQA/2wikimultihopqa.json` | QA list via `--data_path` | multi-hop `2wiki` |
-| LV-Eval | `LVEVAL/lveval_corpus_for_pipeline.json` | `LVEVAL/lveval_qa_compact.json` | multi-hop `lveval` |
-| NQ | `NQ_REAR/nq_rear_corpus_for_pipeline.json` | `NQ_REAR/nq_rear_qa.json` | simple `nq_rear` |
-| PopQA | `POPQA/popqa_corpus_for_pipeline.json` | `POPQA/popqa_qa.json` | simple `popqa` |
+| Included file | Contents | Use |
+|---|---|---|
+| `MuSiQue/musique.json` | 1,000 QA records with questions, answers and paragraphs | Default input for indexing, QA and evaluation |
+| `MuSiQue/musique_corpus.json` | 11,656 title/text records | Separate corpus file; not the default indexing or QA input |
 
-The existing upstream MuSiQue inputs are retained. Other datasets and generated
-artifacts must be supplied separately. QA records use `question`, `answer`, and
-`id`/`_id`. Corpus layouts include HotpotQA `context` pairs and MuSiQue
-`paragraphs` with `title`, `paragraph_text`, and stable `corpus_idx`.
+The counts above describe the committed files, not every experiment corpus in the
+paper. Preserve document IDs across QA, corpus, metadata and indices.
+Generated TRA metadata, SQLite databases, embeddings and BM25 indices are not bundled;
+build them before running QA. The following workflow uses the included MuSiQue input.
 
-`prepare_singlehop_v5.py` converts `NQ_REAR/nq_rear.json` + `nq_rear_corpus.json`
-and `POPQA/popqa.json` + `popqa_corpus.json` into separate QA and corpus wrappers.
-These inputs follow the local experiment's HippoRAG2-style format, not arbitrary raw downloads.
-See `prepare_lveval_v5.py` for LV-Eval source filenames.
+## Build MuSiQue indices
 
 ```bash
-python prepare_singlehop_v5.py --dataset all
 python setup_indices_v5.py --dataset musique
 ```
 
 The model defaults to the configured provider's model; `--model` overrides it.
-Indexing dataset names: `hotpotqa`, `musique`, `2wiki`, `lveval`, `nq_rear`, `popqa`.
-Outputs per dataset: `metadata_v5.json`, `metadata_v5.db`,
+Outputs under `MuSiQue/`: `metadata_v5.json`, `metadata_v5.db`,
 `embedding_texts_v5.json`, `path_embeddings_v5.npz`, `bm25_index_v5/`.
 Existing artifacts are reused; `--rebuild` overwrites them.
 
@@ -70,7 +63,7 @@ Historical indices split lists of objects into separate items. Use
 records the policy. Unmanifested existing indices are treated as legacy;
 switching policies requires backing up the artifacts and rebuilding both indices.
 
-## Run
+## Run MuSiQue
 
 Multi-hop:
 
@@ -85,31 +78,20 @@ Override inputs with `--data_path`, `--corpus_path`, `--db_path`,
 corpus records are separate. The original experiment runner
 `test_pipeline_paths_hint_expansion.py` remains supported.
 
-Simple QA (direct RRF, one final answer call, no QD or reranking):
+Optional no-QD comparison on the included MuSiQue input (direct RRF and one final answer call):
 
 ```bash
-python run_simple_qa.py --dataset nq_rear --limit 10
-python run_simple_qa.py --dataset popqa --limit 10
-```
-
-For the paper's no-QD comparison on multi-hop data, the same direct runner supports
-`hotpot`, `musique`, `2wiki`, and `lveval`:
-
-```bash
-python run_simple_qa.py --dataset 2wiki --qa_path 2WikiMultihopQA/2wiki_qa.json
+python run_simple_qa.py --dataset musique --limit 10
 ```
 
 This mode omits sequential answering and reranking as described in Appendix D.2.
-NQ uses repaired input and PopQA uses canonical/deduplicated input in the published
-experiments. Supply those exact inputs when comparing reported results; preparation
-alone does not guarantee the same corpus or subset as the paper.
 
 `--no_llm` on the multi-hop runner and `--retrieval_only` on the simple runner skip
 chat, but embeddings may still call an API. Multi-hop `--no_llm` also bypasses QD:
 it is a retrieval smoke check, not full multi-hop evaluation. Its predictions are
 null and must not be used to report QA accuracy.
 
-## Evaluate
+## Evaluate MuSiQue
 
 ```bash
 python evaluate_mrqa.py Results/musique_result.json
@@ -126,11 +108,8 @@ LV-Eval lacks gold evidence in the paper and has no evidence Recall@5 or Oracle 
 The multi-hop runner exposes `--sq_fusion_method`, `--final_selection_mode`,
 `--no_previous_context`, `--top_k_paths`, and `--top_k_passages`.
 Section 4.4 and Table 5 have different seed allocations. The default
-`--budget_profile main` keeps 3+2 passages and 20+10 Facts. For the Table 5 grid:
-
-```bash
-python run_multihop_qa.py --dataset 2wiki --budget_profile table5 --top_k_passages 5 --top_k_paths 30 --data_path 2WikiMultihopQA/2wiki_qa.json --corpus_path 2WikiMultihopQA/2wikimultihopqa.json
-```
+`--budget_profile main` keeps 3+2 passages and 20+10 Facts. The code also retains
+`--budget_profile table5`, but reproducing that table requires external 2Wiki data.
 
 | Profile | Total passages → seed count | Total Facts → seed count |
 |---|---|---|
@@ -151,6 +130,18 @@ Offline tests cover candidate budgets, QD dependency order, direct Simple QA,
 null retrieval-only predictions, Fact preservation, index compatibility and budget profiles.
 Full benchmark scores have not been rerun.
 Exact experiment replay needs original subsets, generated artifacts and model responses.
+
+## Optional external datasets (not included)
+
+The code retains adapters for HotpotQA, 2WikiMultiHopQA, LV-Eval, NQ and PopQA.
+Their data must be obtained and prepared separately; selecting a dataset name does
+not download it. Do not run `--dataset all` on a fresh clone containing only MuSiQue.
+
+`prepare_singlehop_v5.py` expects pre-existing NQ/PopQA inputs in the local
+experiment's HippoRAG2-style format. `prepare_lveval_v5.py` likewise expects external
+LV-Eval files. Neither is a required step in the MuSiQue workflow above.
+The published experiments use repaired NQ and canonical/deduplicated PopQA;
+adapters alone do not supply those exact experiment inputs.
 
 ## Citation
 
