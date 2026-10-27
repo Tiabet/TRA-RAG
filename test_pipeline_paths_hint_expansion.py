@@ -42,8 +42,9 @@ async def process_single_question(pipeline, item, idx: int, total: int, no_llm: 
             passages, paths = await pipeline.retrieve_for_query(question)
             result = {
                 'success': True,
-                'final_answer': gold_answer,
-                'predicted_answer': gold_answer,
+                'final_answer': None,
+                'predicted_answer': None,
+                'retrieval_only': True,
                 'final_retrieved_passages': [
                     {
                         'doc_id': p.get('doc_id'),

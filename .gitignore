@@ -212,3 +212,15 @@ result/
 *.txt
 *.graphml
 LVEVAL/
+!requirements.txt
+!.env.example
+*.db
+*.db-shm
+*.db-wal
+*.npz
+*.npy
+*.pkl
+Results/
+**/bm25_index*/
+*.tar.gz
+*.zip

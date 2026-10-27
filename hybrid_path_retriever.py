@@ -34,7 +34,8 @@ class HybridPathRetriever:
         bm25_index_path: str = 'HotpotQA/bm25_index',
         embeddings_path: str = 'HotpotQA/path_embeddings.npz',
         bm25_weight: float = 0.5,
-        dense_weight: float = 0.5
+        dense_weight: float = 0.5,
+        rrf_k: int = 60,
     ):
         """
         Args:
@@ -47,6 +48,7 @@ class HybridPathRetriever:
         
         self.bm25_weight = bm25_weight
         self.dense_weight = dense_weight
+        self.rrf_k = max(1, int(rrf_k))
         
         # Load BM25 index
         print(f"Loading BM25 index from: {bm25_index_path}")
@@ -173,7 +175,7 @@ class HybridPathRetriever:
                 bm25_raw_scores[i] = bm25_map.get(idx, 0.0)
         
         # 3. RRF Calculation
-        rrf_k = 60
+        rrf_k = self.rrf_k
         
         # Get ranks for Dense
         # argsort gives indices that would sort the array. [::-1] reverses to descending.
@@ -376,7 +378,7 @@ class HybridPathRetriever:
 
         # RRF (Reciprocal Rank Fusion)
         # Score = 1 / (k + rank)
-        rrf_k = 60
+        rrf_k = self.rrf_k
         
         all_indices = set()
         bm25_ranks = {}

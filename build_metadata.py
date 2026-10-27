@@ -86,24 +86,8 @@ def parse_args():
 
 def initialize_llm_client():
     """Initialize the LLM client."""
-    base_url = os.getenv("ALICE_CHAT_URL")
-    api_key = os.getenv("ALICE_OPENAI_KEY")
-
-    print(f"Using ALICE_CHAT_URL: {base_url}")
-    print(f"Using ALICE_OPENAI_KEY: {api_key[:4]}...{api_key[-4:] if api_key else 'None'}")
-    
-    if not base_url or not api_key:
-        raise ValueError(
-            "Missing required environment variables. "
-            "Set ALICE_CHAT_URL and ALICE_OPENAI_KEY (e.g., in a .env file)."
-        )
-    
-    client = AsyncOpenAI(
-        base_url=base_url,
-        api_key=api_key
-    )
-    
-    return client
+    from llm_provider import create_async_chat_client
+    return create_async_chat_client()
 
 
 def format_passage_for_prompt(title: str, sentences: List[str]) -> str:

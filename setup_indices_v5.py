@@ -46,6 +46,8 @@ class DatasetConfig:
 
 
 DATASETS: dict[str, DatasetConfig] = {
+    "nq_rear": DatasetConfig("nq_rear", "NQ_REAR/nq_rear_corpus_for_pipeline.json", "NQ_REAR"),
+    "popqa": DatasetConfig("popqa", "POPQA/popqa_corpus_for_pipeline.json", "POPQA"),
     "hotpotqa": DatasetConfig(
         name="hotpotqa",
         qa_path="HotpotQA/hotpotqa.json",

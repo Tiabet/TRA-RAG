@@ -124,12 +124,16 @@ class NewMultihopPipelineV11PathsHint:
 		answer_k_passages: int | None = None,
 		answer_k_paths: int | None = None,
 		path_fetch_k: int = 50,
+		retrieval_candidates: int = 300,
 		fusion_method: str = 'rrf',
 		use_previous_context: bool = True,
 		verbose: bool = True,
 		chat_model: str | None = None,
 	):
 		self.client = client
+		self.retrieval_candidates = int(retrieval_candidates)
+		if self.retrieval_candidates <= 0:
+			raise ValueError('retrieval_candidates must be positive')
 		self.retriever = retriever
 		self.db_path = db_path
 		# Retrieval/storage counts (used for ranking, logging, and downstream final selection).
@@ -337,8 +341,8 @@ class NewMultihopPipelineV11PathsHint:
 		fetched_paths = await self.retriever.search_hybrid(
 			query,
 			top_k=fetch_k,
-			bm25_candidates=max(50, fetch_k),
-			dense_candidates=max(50, fetch_k),
+			bm25_candidates=self.retrieval_candidates,
+			dense_candidates=self.retrieval_candidates,
 			fusion_method=self.fusion_method,
 		)
 
