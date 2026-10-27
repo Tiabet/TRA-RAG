@@ -19,8 +19,10 @@ from pathlib import Path
 class EmbeddingTextGenerator:
     """Generate embedding-ready texts from metadata."""
 
-    def __init__(self):
-        pass
+    def __init__(self, fact_granularity: str = 'top_level'):
+        if fact_granularity not in ('top_level', 'legacy_items'):
+            raise ValueError('Unknown fact granularity: ' + fact_granularity)
+        self.fact_granularity = fact_granularity
     
     def extract_embedding_texts(self, title: str, metadata: Dict) -> List[Dict]:
         """
@@ -48,7 +50,7 @@ class EmbeddingTextGenerator:
                 cleaned_value = self._clean_value(value)
 
                 # If this is a list of dicts (e.g., rivers, bridges), split into per-item paths
-                if self._is_list_of_dicts(cleaned_value):
+                if self.fact_granularity == 'legacy_items' and self._is_list_of_dicts(cleaned_value):
                     self._add_list_of_dict_items(title, [key], cleaned_value, results, is_relation=False)
                 else:
                     # Add result (Attribute type)
@@ -79,7 +81,7 @@ class EmbeddingTextGenerator:
             cleaned_value = self._clean_value(value)
             print(f"DEBUG: Key={key}, Type={type(cleaned_value)}")
 
-            if self._is_list_of_dicts(cleaned_value):
+            if self.fact_granularity == 'legacy_items' and self._is_list_of_dicts(cleaned_value):
                 self._add_list_of_dict_items(title, [key], cleaned_value, results, is_relation=False)
             else:
                 self._add_result(title, [key], cleaned_value, results, is_relation=False)
@@ -273,6 +275,7 @@ class EmbeddingTextGenerator:
 def generate_embedding_texts_from_db(
     db_path: str = 'HotpotQA/metadata_v3.db',
     output_path: str = 'HotpotQA/embedding_texts.json',
+    fact_granularity: str = 'top_level',
 ) -> List[Dict]:
     """
     Generate embedding texts from metadata database.
@@ -287,7 +290,7 @@ def generate_embedding_texts_from_db(
     print("Generating Embedding Texts from Metadata DB")
     print("="*80)
     
-    generator = EmbeddingTextGenerator()
+    generator = EmbeddingTextGenerator(fact_granularity=fact_granularity)
     
     # Connect to database
     conn = sqlite3.connect(db_path)
@@ -353,6 +356,7 @@ def generate_embedding_texts_from_db(
 def generate_embedding_texts_from_json(
     json_path: str = 'HotpotQA/hotpotqa_sample_200_metadata.json',
     output_path: str = 'HotpotQA/embedding_texts.json',
+    fact_granularity: str = 'top_level',
 ) -> List[Dict]:
     """
     Generate embedding texts from metadata JSON file (list of QA pairs with context_metadata).
@@ -361,7 +365,7 @@ def generate_embedding_texts_from_json(
     print("Generating Embedding Texts from Metadata JSON")
     print("="*80)
     
-    generator = EmbeddingTextGenerator()
+    generator = EmbeddingTextGenerator(fact_granularity=fact_granularity)
     
     with open(json_path, 'r', encoding='utf-8') as f:
         data = json.load(f)

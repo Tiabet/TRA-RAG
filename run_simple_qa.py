@@ -37,7 +37,7 @@ async def answer_direct(pipeline, question, retrieval_only=False):
 
 def parse_args():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument('--dataset', choices=['nq_rear', 'popqa'], required=True)
+    p.add_argument('--dataset', choices=['nq_rear', 'popqa', 'hotpot', 'musique', '2wiki', 'lveval'], required=True)
     p.add_argument('--qa_path')
     p.add_argument('--corpus_path')
     p.add_argument('--artifact_dir')
@@ -49,9 +49,18 @@ def parse_args():
 
 async def run(args):
     load_dotenv()
-    directory = Path(args.artifact_dir or ('NQ_REAR' if args.dataset == 'nq_rear' else 'POPQA'))
-    qa = Path(args.qa_path or directory / f'{args.dataset}_qa.json')
-    corpus = Path(args.corpus_path or directory / f'{args.dataset}_corpus_for_pipeline.json')
+    inputs = {
+        'nq_rear': ('NQ_REAR', 'nq_rear_qa.json', 'nq_rear_corpus_for_pipeline.json'),
+        'popqa': ('POPQA', 'popqa_qa.json', 'popqa_corpus_for_pipeline.json'),
+        'hotpot': ('HotpotQA', 'hotpotqa.json', 'hotpotqa.json'),
+        'musique': ('MuSiQue', 'musique.json', 'musique.json'),
+        '2wiki': ('2WikiMultihopQA', '2wiki_qa.json', '2wikimultihopqa.json'),
+        'lveval': ('LVEVAL', 'lveval_qa_compact.json', 'lveval_corpus_for_pipeline.json'),
+    }
+    folder, qa_name, corpus_name = inputs[args.dataset]
+    directory = Path(args.artifact_dir or folder)
+    qa = Path(args.qa_path or directory / qa_name)
+    corpus = Path(args.corpus_path or directory / corpus_name)
     output = Path(args.output or f'Results/{args.dataset}_simple.json')
     data = json.loads(qa.read_text(encoding='utf-8'))
     if args.limit:

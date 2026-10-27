@@ -34,6 +34,7 @@ from bm25_indexer import BM25Indexer
 from build_metadata import initialize_llm_client, process_dataset
 from embedding_text_generator import generate_embedding_texts_from_db
 from path_embedding_generator import PathEmbeddingGenerator
+from llm_provider import detect_provider
 from prepare_lveval_v5 import prepare_lveval_files
 from setup_hotpotqa_db import convert_metadata_to_db
 
@@ -77,7 +78,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--dataset", type=str, default="all", choices=["all", *DATASETS.keys()])
 
     # Metadata build controls
-    p.add_argument("--model", type=str, default="openai/gpt-4o-mini")
+    p.add_argument("--model", type=str, default=None, help="Default: model selected by llm_provider")
+    p.add_argument("--fact_granularity", choices=['top_level', 'legacy_items'], default='top_level',
+                   help="Published top-level Facts, or historical per-list-item indexing")
     p.add_argument("--metadata_concurrency", type=int, default=200)
     p.add_argument("--metadata_batch_size", type=int, default=10)
     p.add_argument("--max_passages", type=int, default=None)
@@ -108,6 +111,22 @@ def _paths_for_dataset(cfg: DatasetConfig, root: Path) -> dict[str, Path]:
     }
 
 
+def validate_granularity(paths, manifest_path, requested):
+    """Prevent silently mixing previously built Facts with a different policy."""
+    existing = any(paths[k].exists() for k in ('embedding_texts', 'embeddings', 'bm25_index'))
+    if not existing:
+        return
+    if manifest_path.exists():
+        recorded = json.loads(manifest_path.read_text(encoding='utf-8'))['fact_granularity']
+    else:
+        recorded = 'legacy_items'
+    if recorded != requested:
+        raise ValueError(
+            f'Existing index granularity is {recorded}, requested {requested}. '
+            'Use the matching --fact_granularity, or back up artifacts and rebuild with --rebuild.'
+        )
+
+
 async def build_for_dataset(args: argparse.Namespace, cfg: DatasetConfig, root: Path) -> None:
     paths = _paths_for_dataset(cfg, root)
 
@@ -126,6 +145,9 @@ async def build_for_dataset(args: argparse.Namespace, cfg: DatasetConfig, root: 
     embedding_texts_path = paths["embedding_texts"]
     embeddings_path = paths["embeddings"]
     bm25_index_path = paths["bm25_index"]
+    manifest_path = embedding_texts_path.with_name('index_manifest.json')
+    if not args.rebuild and not args.dry_run_metadata:
+        validate_granularity(paths, manifest_path, args.fact_granularity)
 
     for p in [
         metadata_json_path.parent,
@@ -164,7 +186,7 @@ async def build_for_dataset(args: argparse.Namespace, cfg: DatasetConfig, root: 
         results = await process_dataset(
             client=client,  # unused when dry_run_metadata=True
             data=data,
-            model=str(args.model),
+            model=(args.model or ('gpt-4o-mini' if args.dry_run_metadata else detect_provider().chat_model)),
             max_passages=args.max_passages,
             batch_size=int(args.metadata_batch_size),
             concurrency=int(args.metadata_concurrency),
@@ -204,6 +226,7 @@ async def build_for_dataset(args: argparse.Namespace, cfg: DatasetConfig, root: 
         generate_embedding_texts_from_db(
             db_path=str(db_path),
             output_path=str(embedding_texts_path),
+            fact_granularity=args.fact_granularity,
         )
 
     # 4) Dense path embeddings
@@ -233,6 +256,10 @@ async def build_for_dataset(args: argparse.Namespace, cfg: DatasetConfig, root: 
             strip_stopwords_in_embedding_text=True,
         )
 
+    manifest_path.write_text(json.dumps({
+        'paper': '2026.emnlp-main.118', 'fact_granularity': args.fact_granularity,
+        'dataset': cfg.name,
+    }, indent=2), encoding='utf-8')
     print(f"\n[OK] Completed v5 pipeline for {cfg.name}")
 
 

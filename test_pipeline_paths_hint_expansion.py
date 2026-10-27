@@ -141,6 +141,10 @@ def parse_args():
     p = argparse.ArgumentParser(description='Test v12 paths-as-hints pipeline (final reranking)')
     p.add_argument('--dataset', choices=['musique', 'hotpot', '2wiki', 'lveval'], required=True)
     p.add_argument('--output', type=str, default='')
+    p.add_argument('--budget_profile', choices=['main', 'table5'], default='main')
+    p.add_argument('--retrieval_candidates', type=int, default=300)
+    p.add_argument('--rrf_k', type=int, default=60)
+    p.add_argument('--corpus_path', default='', help='Separate QA-style corpus wrapper for passage lookup')
     # Optional artifact overrides (for robustness / combined-corpus runs)
     p.add_argument('--data_path', type=str, default='', help='Override QA JSON path (also used to build doc_id->passage map)')
     p.add_argument('--db_path', type=str, default='', help='Override SQLite DB path (metadata_v5.db)')
@@ -213,6 +217,7 @@ async def run_test(args) -> None:
         embeddings_path=embeddings_path,
         bm25_weight=float(args.bm25_weight),
         dense_weight=float(args.dense_weight),
+        rrf_k=args.rrf_k,
     )
 
     # Treat CLI top_k_* as *answering* counts (context size).
@@ -229,8 +234,10 @@ async def run_test(args) -> None:
 
     pipeline = NewMultihopPipelineV12PathsHintExpansion(
         client=client,  # type: ignore[arg-type]
+        budget_profile=args.budget_profile,
+        retrieval_candidates=args.retrieval_candidates,
         retriever=retriever,
-        hotpotqa_path=data_path,
+        hotpotqa_path=args.corpus_path or data_path,
         db_path=db_path,
         top_k_passages=int(retrieval_top_k_passages),
         top_k_paths=int(retrieval_top_k_paths),
@@ -322,6 +329,9 @@ async def run_test(args) -> None:
                 'answer_k_paths': int(answer_k_paths),
                 'path_fetch_k_input': 50,
                 'bm25_weight': float(args.bm25_weight),
+                'budget_profile': args.budget_profile,
+                'retrieval_candidates': args.retrieval_candidates,
+                'rrf_k': args.rrf_k,
                 'dense_weight': float(args.dense_weight),
                 'sq_fusion_method': str(getattr(args, 'sq_fusion_method', 'rrf')),
                 'final_selection_mode': str(getattr(args, 'final_selection_mode', 'rerank')),
@@ -330,6 +340,7 @@ async def run_test(args) -> None:
                 'no_llm': bool(args.no_llm),
                 'artifacts': {
                     'data_path': data_path,
+                    'corpus_path': args.corpus_path or data_path,
                     'db_path': db_path,
                     'bm25_index_path': bm25_index_path,
                     'embeddings_path': embeddings_path,
