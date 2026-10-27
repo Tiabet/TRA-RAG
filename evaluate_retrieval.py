@@ -271,7 +271,7 @@ def get_retrieved_doc_ids(result_item: Dict, sources: str = 'both') -> Set[str]:
 def get_final_retrieved_doc_ids_at_k(result_item: Dict, k: int = 5, sources: str = 'passages') -> Set[str]:
     """Extract doc_ids for final-answer retrieval only, truncated to @k.
 
-    Expected fields (emitted by v11 pipelines):
+    Expected fields (emitted by the multi-hop pipeline):
       - final_retrieved_passages: List[{doc_id, title, ...}] (ordered)
       - final_retrieved_paths: List[{doc_id, ...}] (optional)
 

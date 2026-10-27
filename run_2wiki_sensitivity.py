@@ -18,10 +18,10 @@ from dotenv import load_dotenv
 from bm25_indexer import BM25Indexer
 from evaluate_retrieval import get_gold_corpus_doc_ids
 from evaluate_mrqa import compute_metrics_with_aliases
-from hybrid_path_retriever import HybridPathRetriever
+from hybrid_retriever import HybridFactRetriever
 from llm_provider import create_async_chat_client, detect_provider
-from new_multihop_pipeline_paths_hint_expansion import NewMultihopPipelineV12PathsHintExpansion
-from path_embedding_generator import PathEmbeddingGenerator
+from tra_pipeline import TRAPipeline
+from fact_embeddings import FactEmbeddingGenerator
 from query_decomposition import QueryDecomposition, SubQuestion
 
 
@@ -70,11 +70,11 @@ def serialize_entry(entry: dict[str, Any], variant: str) -> str:
 
 
 def prepare_variant_texts() -> dict[str, Path]:
-    source = DATA / "embedding_texts_v5.json"
+    source = DATA / "facts.json"
     rows = _read_json(source)
     out: dict[str, Path] = {"natural": source}
     for variant in VARIANTS[1:]:
-        target = DATA / f"embedding_texts_v5_{variant}.json"
+        target = DATA / f"facts_{variant}.json"
         transformed = []
         for row in rows:
             item = dict(row)
@@ -90,17 +90,17 @@ async def prepare_serialization_indexes(batch_size: int, concurrency: int) -> No
     text_paths = prepare_variant_texts()
 
     async def embed_one(variant: str) -> None:
-        output = DATA / f"path_embeddings_v5_{variant}.npz"
+        output = DATA / f"fact_embeddings_{variant}.npz"
         if output.exists():
             print(f"[SKIP] Existing embedding index: {output}")
             return
-        generator = PathEmbeddingGenerator(batch_size=batch_size, max_concurrency=concurrency)
+        generator = FactEmbeddingGenerator(batch_size=batch_size, max_concurrency=concurrency)
         await generator.generate_embeddings(str(text_paths[variant]), str(output))
 
     await asyncio.gather(*(embed_one(v) for v in VARIANTS))
 
     async def bm25_one(variant: str) -> None:
-        output = DATA / f"bm25_index_v5_{variant}"
+        output = DATA / f"bm25_index_{variant}"
         if (output / "metadata.json").exists():
             print(f"[SKIP] Existing BM25 index: {output}")
             return
@@ -143,7 +143,7 @@ def _cached_questions(cached: list[dict[str, Any]]) -> list[str]:
 
 
 async def build_query_embedding_cache(questions: list[str], batch_size: int, concurrency: int) -> dict[str, np.ndarray]:
-    generator = PathEmbeddingGenerator(batch_size=batch_size, max_concurrency=concurrency)
+    generator = FactEmbeddingGenerator(batch_size=batch_size, max_concurrency=concurrency)
     matrix = await generator.embed_texts(questions)
     normalized: dict[str, np.ndarray] = {}
     for q, vector in zip(questions, matrix):
@@ -200,7 +200,7 @@ def _attach_support_paths(sq: SubQuestion, passages: list[dict[str, Any]]) -> No
 
 
 def _artifact_paths(variant: str) -> tuple[Path, Path]:
-    return DATA / f"bm25_index_v5_{variant}", DATA / f"path_embeddings_v5_{variant}.npz"
+    return DATA / f"bm25_index_{variant}", DATA / f"fact_embeddings_{variant}.npz"
 
 
 async def run_config(
@@ -218,7 +218,7 @@ async def run_config(
     chat_model: str = "",
 ) -> dict[str, Any]:
     bm25_path, embedding_path = _artifact_paths(variant)
-    retriever = HybridPathRetriever(
+    retriever = HybridFactRetriever(
         bm25_index_path=str(bm25_path),
         embeddings_path=str(embedding_path),
         bm25_weight=1.0,
@@ -233,11 +233,11 @@ async def run_config(
         return vector
 
     retriever.embed_query = cached_embed  # type: ignore[method-assign]
-    pipeline = NewMultihopPipelineV12PathsHintExpansion(
+    pipeline = TRAPipeline(
         client=client,
         retriever=retriever,
         hotpotqa_path=str(DATA / "2wikimultihopqa.json"),
-        db_path=str(DATA / "metadata_v5.db"),
+        db_path=str(DATA / "metadata.db"),
         top_k_passages=20,
         top_k_paths=sq_path_pool,
         answer_k_passages=5,

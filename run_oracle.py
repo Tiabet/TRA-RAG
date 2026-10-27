@@ -4,17 +4,17 @@ Upper Bound Experiments
 Perfect Retrieval with Original Passages (Gold supporting passages)
 
 Usage:
-    python upper_bound_experiment.py                     # Default: HotpotQA
-    python upper_bound_experiment.py --dataset hotpotqa  # HotpotQA
-    python upper_bound_experiment.py --dataset musique   # MuSiQue
-    python upper_bound_experiment.py --dataset 2wiki     # 2WikiMultihopQA
+    python run_oracle.py                     # Default: HotpotQA
+    python run_oracle.py --dataset hotpotqa  # HotpotQA
+    python run_oracle.py --dataset musique   # MuSiQue
+    python run_oracle.py --dataset 2wiki     # 2WikiMultihopQA
 
 Optional:
-    python upper_bound_experiment.py --dataset hotpotqa --prompt naive
+    python run_oracle.py --dataset hotpotqa --prompt naive
         - Uses the repo's NAIVE_RAG_ANSWER_PROMPT
-    python upper_bound_experiment.py --dataset hotpotqa --prompt final
+    python run_oracle.py --dataset hotpotqa --prompt final
         - Uses the repo's FINAL_ANSWER_SYNTHESIS_PROMPT (same as current pipeline)
-    python upper_bound_experiment.py --dataset hotpotqa --prompt upper
+    python run_oracle.py --dataset hotpotqa --prompt upper
         - Uses the local UPPER_BOUND_PROMPT (legacy)
 """
 

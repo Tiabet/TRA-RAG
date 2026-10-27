@@ -105,7 +105,7 @@ def canonical_title(mapping: dict[str, Any], doc_id: Any, current_title: Any) ->
 
 
 def write_embedding_texts(mapping: dict[str, Any]) -> None:
-    data = load_json(POPQA / "embedding_texts_v5.json")
+    data = load_json(POPQA / "facts.json")
     for row in data:
         did = row.get("doc_id")
         if did is None:
@@ -115,12 +115,12 @@ def write_embedding_texts(mapping: dict[str, Any]) -> None:
         row["source_title"] = ct
         row["entity_title"] = ct
         row["title"] = ct
-    write_json(POPQA / "embedding_texts_v5_canonical.json", data)
+    write_json(POPQA / "facts_canonical.json", data)
 
 
-def write_path_embeddings(mapping: dict[str, Any]) -> None:
-    src = POPQA / "path_embeddings_v5.npz"
-    dst = POPQA / "path_embeddings_v5_canonical.npz"
+def write_fact_embeddings(mapping: dict[str, Any]) -> None:
+    src = POPQA / "fact_embeddings.npz"
+    dst = POPQA / "fact_embeddings_canonical.npz"
     data = np.load(src, allow_pickle=True)
     arrays: dict[str, Any] = {k: data[k] for k in data.files}
 
@@ -146,8 +146,8 @@ def write_path_embeddings(mapping: dict[str, Any]) -> None:
 
 
 def write_bm25_metadata(mapping: dict[str, Any]) -> None:
-    src_dir = POPQA / "bm25_index_v5"
-    dst_dir = POPQA / "bm25_index_v5_canonical"
+    src_dir = POPQA / "bm25_index"
+    dst_dir = POPQA / "bm25_index_canonical"
     dst_dir.mkdir(parents=True, exist_ok=True)
     for src in src_dir.iterdir():
         if src.name == "metadata.json":
@@ -170,7 +170,7 @@ def write_bm25_metadata(mapping: dict[str, Any]) -> None:
 
 
 def write_metadata_json_and_db(mapping: dict[str, Any]) -> None:
-    meta = load_json(POPQA / "metadata_v5.json")
+    meta = load_json(POPQA / "metadata.json")
     for item in meta:
         filtered = []
         seen = set()
@@ -184,10 +184,10 @@ def write_metadata_json_and_db(mapping: dict[str, Any]) -> None:
             seen.add(canon)
             filtered.append(row)
         item["context_metadata"] = filtered
-    write_json(POPQA / "metadata_v5_canonical.json", meta)
+    write_json(POPQA / "metadata_canonical.json", meta)
 
-    src = POPQA / "metadata_v5.db"
-    dst = POPQA / "metadata_v5_canonical.db"
+    src = POPQA / "metadata.db"
+    dst = POPQA / "metadata_canonical.db"
     if dst.exists():
         dst.unlink()
     src_conn = sqlite3.connect(src)
@@ -216,7 +216,7 @@ def main() -> None:
     mapping = build_canonical_map()
     write_json(POPQA / "canonical_doc_id_map.json", mapping)
     write_embedding_texts(mapping)
-    write_path_embeddings(mapping)
+    write_fact_embeddings(mapping)
     write_bm25_metadata(mapping)
     write_metadata_json_and_db(mapping)
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prepare HippoRAG2 single-hop datasets for the v5 pipeline.
+"""Prepare HippoRAG2 single-hop datasets for the TRA-RAG pipeline.
 
 Creates two files per dataset:
 - *_qa.json: compact QA records used by runners.
@@ -198,7 +198,7 @@ def prepare_popqa(paths: SingleHopPaths) -> dict[str, int]:
 
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Prepare NQ_REAR/POPQA for the v5 pipeline")
+    p = argparse.ArgumentParser(description="Prepare NQ_REAR/POPQA for the TRA-RAG pipeline")
     p.add_argument("--dataset", choices=["all", "nq_rear", "popqa"], default="all")
     p.add_argument("--root", type=str, default=".")
     return p.parse_args()

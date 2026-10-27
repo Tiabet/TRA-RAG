@@ -390,7 +390,7 @@ async def main_async(args: argparse.Namespace) -> None:
 
 	repo_root = _repo_root()
 	qa_path = repo_root / "2WikiMultihopQA" / "2wikimultihopqa.json"
-	metadata_db_path = repo_root / "2WikiMultihopQA" / "metadata_v5.db"
+	metadata_db_path = repo_root / "2WikiMultihopQA" / "metadata.db"
 	out_path = repo_root / (args.output or "Results/2wiki_triplets_vs_metadata_eval_gpt4o-mini.jsonl")
 	out_path.parent.mkdir(parents=True, exist_ok=True)
 

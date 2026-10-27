@@ -18,7 +18,7 @@ from openai import AsyncOpenAI
 import time
 
 
-class PathEmbeddingGenerator:
+class FactEmbeddingGenerator:
     """Generate embeddings for metadata paths using OpenAI API."""
     
     def __init__(self, batch_size: int = 200, max_concurrency: int = 5):
@@ -123,14 +123,14 @@ class PathEmbeddingGenerator:
     
     async def generate_embeddings(
         self,
-        input_path: str = 'HotpotQA/embedding_texts.json',
-        output_path: str = 'HotpotQA/path_embeddings.npz'
+        input_path: str = 'HotpotQA/facts.json',
+        output_path: str = 'HotpotQA/fact_embeddings.npz'
     ):
         """
         Generate embeddings for all paths.
         
         Args:
-            input_path: Path to embedding_texts.json
+            input_path: Path to facts.json
             output_path: Path to save embeddings (.npz format)
         """
         print("="*80)
@@ -241,7 +241,7 @@ async def test_embedding():
     print("Testing Embedding Generation")
     print("="*80)
     
-    generator = PathEmbeddingGenerator(batch_size=10)
+    generator = FactEmbeddingGenerator(batch_size=10)
     
     test_texts = [
         "The director of The Wolf of Wall Street (2013 film) is Martin Scorsese",
@@ -286,8 +286,8 @@ if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "--test":
         asyncio.run(test_embedding())
     else:
-        generator = PathEmbeddingGenerator(batch_size=200, max_concurrency=5)
+        generator = FactEmbeddingGenerator(batch_size=200, max_concurrency=5)
         asyncio.run(generator.generate_embeddings(
-            input_path='HotpotQA/embedding_texts.json',
-            output_path='HotpotQA/path_embeddings.npz'
+            input_path='HotpotQA/facts.json',
+            output_path='HotpotQA/fact_embeddings.npz'
         ))

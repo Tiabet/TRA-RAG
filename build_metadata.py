@@ -7,7 +7,7 @@ Usage:
     python build_metadata.py -i MuSiQue/musique.json
 
     # Specify output explicitly
-    python build_metadata.py -i HotpotQA/hotpotqa.json -o HotpotQA/metadata_v5.json
+    python build_metadata.py -i HotpotQA/hotpotqa.json -o HotpotQA/metadata.json
 """
 
 import json

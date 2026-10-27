@@ -10,21 +10,21 @@ The original workspace contains older code and uncommitted experiments; it is pr
 
 | Paper component | Required code |
 |---|---|
-| Section 3.1 / A.1: TRA construction | `build_metadata.py`, `setup_hotpotqa_db.py`, `Prompt/metadata_construction_prompt.py` |
-| Section 3.2: Fact indexing | `embedding_text_generator.py`, `path_embedding_generator.py`, `bm25_indexer.py`, `setup_indices_v5.py` |
+| Section 3.1 / A.1: TRA construction | `build_metadata.py`, `metadata_database.py`, `Prompt/metadata_construction_prompt.py` |
+| Section 3.2: Fact indexing | `fact_serialization.py`, `fact_embeddings.py`, `bm25_indexer.py`, `build_indices.py` |
 | Section 3.3 / A.2: QD | `query_decomposition.py`, `Prompt/query_decomposition_prompt.py` |
-| Section 3.4: RRF and reranking | `hybrid_path_retriever.py`, `new_multihop_pipeline_paths_hint_expansion.py` |
-| Multi-hop execution | `run_multihop_qa.py`, `test_pipeline_paths_hint_expansion.py`, `Prompt/answer_prompt.py` |
-| Simple QA | `run_simple_qa.py`, `prepare_singlehop_v5.py` |
-| Metrics | `evaluate_mrqa.py`, `evaluate_retrieval.py`, `llm_evaluation.py` |
-| Oracle / structural comparison | `upper_bound_experiment.py`, `compare_2wiki_triplets_vs_metadata.py`, `Prompt/compare_evaluation.py` |
-| Appendix D sensitivity | `run_2wiki_reviewer_sensitivity.py` (requires cached experiment inputs) |
+| Section 3.4: RRF and reranking | `hybrid_retriever.py`, `tra_pipeline.py` |
+| Multi-hop execution | `run_multihop_qa.py`, `multihop_runner.py`, `Prompt/answer_prompt.py` |
+| Simple QA | `run_simple_qa.py`, `prepare_singlehop.py` |
+| Metrics | `evaluate_mrqa.py`, `evaluate_retrieval.py`, `evaluate_answers_llm.py` |
+| Oracle / structural comparison | `run_oracle.py`, `compare_2wiki_triplets_vs_metadata.py`, `Prompt/compare_evaluation.py` |
+| Appendix D sensitivity | `run_2wiki_sensitivity.py` (requires cached experiment inputs) |
 | Runtime support | `llm_provider.py`, `llm_logger.py` |
-| Input preparation / ID maintenance | `prepare_lveval_v5.py`, `prepare_popqa_canonical_artifacts.py`, `singlehop_canonical.py` |
+| Input preparation / ID maintenance | `prepare_lveval.py`, `prepare_popqa_canonical_artifacts.py`, `singlehop_canonical.py` |
 | Diagnostic | `evaluate_singlehop_answer_bearing_hit.py` (not evidence recall) |
 
-The upstream standalone v12 already includes its v11 base. Copying the local v12
-subclass alone would introduce an unnecessary dependency on the old v11 file.
+`tra_pipeline.py` contains both `BaseQAPipeline` and `TRAPipeline`; no separate
+historical pipeline module is required.
 
 ## Release changes
 

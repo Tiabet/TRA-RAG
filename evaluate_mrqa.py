@@ -5,8 +5,8 @@ MRQA Official Evaluation Metrics
 Evaluation script using MRQA official metrics (Exact Match, F1).
 
 Usage:
-    python evaluate_mrqa.py Results/test_pipeline_v3_original_200_results.json
-    python evaluate_mrqa.py Results/test_new_pipeline_200_results_v2.json
+    python evaluate_mrqa.py Results/musique_result.json
+    python evaluate_mrqa.py Results/musique_comparison.json
 """
 import json
 import re
@@ -316,8 +316,7 @@ def main():
     parser = argparse.ArgumentParser(description="MRQA Official Evaluation")
     parser.add_argument("file", type=str, nargs="?", 
                         # default="Results/naiveRAG/2wiki_naive_noqd_cosine.json",
-                        default="Results\\grid_2wiki_v12_rerun\\2wiki_v12_p10_path50.json",
-                        # default = "Results/test_musique_v11_200_results_v51_cot.json",
+                        default="Results/musique_result.json",
                         help="Path to result JSON file")
     parser.add_argument("-v", "--verbose", action="store_true",
                         help="Print per-example results")

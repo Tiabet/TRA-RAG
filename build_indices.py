@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
 """\
-Unified v5 Index Generation Pipeline
+TRA Index Generation Pipeline
 ===================================
-Builds v5 artifacts end-to-end for supported datasets:
+Builds TRA artifacts end-to-end for supported datasets:
 - LLM metadata JSON (context_metadata)
-- SQLite DB (metadata_v5.db)
-- embedding_texts_v5.json
-- dense path embeddings (path_embeddings_v5.npz)
-- BM25 index (bm25_index_v5/)
+- SQLite DB (metadata.db)
+- facts.json
+- dense path embeddings (fact_embeddings.npz)
+- BM25 index (bm25_index/)
 
 Examples:
-  python setup_indices_v5.py --dataset hotpotqa
-  python setup_indices_v5.py --dataset musique
-  python setup_indices_v5.py --dataset 2wiki
-  python setup_indices_v5.py --dataset lveval
-  python setup_indices_v5.py --dataset all
+  python build_indices.py --dataset hotpotqa
+  python build_indices.py --dataset musique
+  python build_indices.py --dataset 2wiki
+  python build_indices.py --dataset lveval
+  python build_indices.py --dataset all
 
 Notes:
 - Metadata build requires: ALICE_CHAT_URL, ALICE_OPENAI_KEY
@@ -32,11 +32,11 @@ from pathlib import Path
 
 from bm25_indexer import BM25Indexer
 from build_metadata import initialize_llm_client, process_dataset
-from embedding_text_generator import generate_embedding_texts_from_db
-from path_embedding_generator import PathEmbeddingGenerator
+from fact_serialization import generate_embedding_texts_from_db
+from fact_embeddings import FactEmbeddingGenerator
 from llm_provider import detect_provider
-from prepare_lveval_v5 import prepare_lveval_files
-from setup_hotpotqa_db import convert_metadata_to_db
+from prepare_lveval import prepare_lveval_files
+from metadata_database import convert_metadata_to_db
 
 
 @dataclass(frozen=True)
@@ -73,7 +73,7 @@ DATASETS: dict[str, DatasetConfig] = {
 
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Build v5 metadata + indices for one or all datasets")
+    p = argparse.ArgumentParser(description="Build TRA metadata + indices for one or all datasets")
 
     p.add_argument("--dataset", type=str, default="all", choices=["all", *DATASETS.keys()])
 
@@ -91,7 +91,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--embed_concurrency", type=int, default=10)
 
     # IO / overwrite
-    p.add_argument("--rebuild", action="store_true", help="Overwrite existing v5 outputs")
+    p.add_argument("--rebuild", action="store_true", help="Overwrite existing outputs")
 
     # Optional override (only meaningful for single-dataset runs)
     p.add_argument("--qa_path", type=str, default=None, help="Override QA input JSON path")
@@ -103,11 +103,11 @@ def _paths_for_dataset(cfg: DatasetConfig, root: Path) -> dict[str, Path]:
     out_dir = root / cfg.out_dir
     return {
         "qa": root / cfg.qa_path,
-        "metadata_json": out_dir / "metadata_v5.json",
-        "db": out_dir / "metadata_v5.db",
-        "embedding_texts": out_dir / "embedding_texts_v5.json",
-        "embeddings": out_dir / "path_embeddings_v5.npz",
-        "bm25_index": out_dir / "bm25_index_v5",
+        "metadata_json": out_dir / "metadata.json",
+        "db": out_dir / "metadata.db",
+        "embedding_texts": out_dir / "facts.json",
+        "embeddings": out_dir / "fact_embeddings.npz",
+        "bm25_index": out_dir / "bm25_index",
     }
 
 
@@ -159,7 +159,7 @@ async def build_for_dataset(args: argparse.Namespace, cfg: DatasetConfig, root: 
         p.mkdir(parents=True, exist_ok=True)
 
     print("=" * 90)
-    print(f"[setup_indices_v5] dataset={cfg.name}")
+    print(f"[build_indices] dataset={cfg.name}")
     print(f"qa:             {qa_path}")
     print(f"metadata_json:   {metadata_json_path}")
     print(f"db:              {db_path}")
@@ -218,11 +218,11 @@ async def build_for_dataset(args: argparse.Namespace, cfg: DatasetConfig, root: 
             dedup_by_title=False,
         )
 
-    # 3) DB -> embedding_texts.json
+    # 3) DB -> facts.json
     if embedding_texts_path.exists() and not args.rebuild:
         print(f"[Skip] embedding_texts exists: {embedding_texts_path}")
     else:
-        print("\n[Step 3] Generating embedding_texts_v5.json")
+        print("\n[Step 3] Generating facts.json")
         generate_embedding_texts_from_db(
             db_path=str(db_path),
             output_path=str(embedding_texts_path),
@@ -234,7 +234,7 @@ async def build_for_dataset(args: argparse.Namespace, cfg: DatasetConfig, root: 
         print(f"[Skip] embeddings exist: {embeddings_path}")
     else:
         print("\n[Step 4] Generating dense path embeddings")
-        generator = PathEmbeddingGenerator(batch_size=int(args.embed_batch_size), max_concurrency=int(args.embed_concurrency))
+        generator = FactEmbeddingGenerator(batch_size=int(args.embed_batch_size), max_concurrency=int(args.embed_concurrency))
         await generator.generate_embeddings(
             input_path=str(embedding_texts_path),
             output_path=str(embeddings_path),
@@ -260,7 +260,7 @@ async def build_for_dataset(args: argparse.Namespace, cfg: DatasetConfig, root: 
         'paper': '2026.emnlp-main.118', 'fact_granularity': args.fact_granularity,
         'dataset': cfg.name,
     }, indent=2), encoding='utf-8')
-    print(f"\n[OK] Completed v5 pipeline for {cfg.name}")
+    print(f"\n[OK] Completed index build for {cfg.name}")
 
 
 async def main() -> None:

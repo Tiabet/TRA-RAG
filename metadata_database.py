@@ -123,6 +123,6 @@ def convert_metadata_to_db(
 
 if __name__ == "__main__":
     convert_metadata_to_db(
-        metadata_json_path='HotpotQA/hotpotqa_sample_200_metadata_v4aligned.json',
-        db_path='HotpotQA/metadata_v4aligned.db'
+        metadata_json_path='HotpotQA/hotpotqa_sample_200_metadata.json',
+        db_path='HotpotQA/metadata.db'
     )

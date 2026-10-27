@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Test runner for v12 paths-hint pipeline (final reranking, supports concurrency).
+"""Multi-hop QA runner (final reranking, supports concurrency).
 
 Examples:
-    python test_pipeline_paths_hint_expansion.py --dataset musique --no_llm
-    python test_pipeline_paths_hint_expansion.py --dataset hotpot --concurrency 10
-    python test_pipeline_paths_hint_expansion.py --dataset musique --concurrency 20
+    python multihop_runner.py --dataset musique --no_llm
+    python multihop_runner.py --dataset hotpot --concurrency 10
+    python multihop_runner.py --dataset musique --concurrency 20
 """
 
 import argparse
@@ -19,10 +19,10 @@ from pathlib import Path
 from dotenv import load_dotenv
 from openai import AsyncOpenAI
 
-from hybrid_path_retriever import HybridPathRetriever
+from hybrid_retriever import HybridFactRetriever
 from llm_logger import finalize_log, init_logger
-from new_multihop_pipeline_paths_hint_expansion import (
-    NewMultihopPipelineV12PathsHintExpansion,
+from tra_pipeline import (
+    TRAPipeline,
     _default_artifact_paths,
     _json_default,
 )
@@ -138,7 +138,7 @@ async def run_batch(pipeline, items, start_idx: int, total: int, no_llm: bool, v
 
 
 def parse_args():
-    p = argparse.ArgumentParser(description='Test v12 paths-as-hints pipeline (final reranking)')
+    p = argparse.ArgumentParser(description='Run TRA-RAG multi-hop QA (final reranking)')
     p.add_argument('--dataset', choices=['musique', 'hotpot', '2wiki', 'lveval'], required=True)
     p.add_argument('--output', type=str, default='')
     p.add_argument('--budget_profile', choices=['main', 'table5'], default='main')
@@ -147,15 +147,15 @@ def parse_args():
     p.add_argument('--corpus_path', default='', help='Separate QA-style corpus wrapper for passage lookup')
     # Optional artifact overrides (for robustness / combined-corpus runs)
     p.add_argument('--data_path', type=str, default='', help='Override QA JSON path (also used to build doc_id->passage map)')
-    p.add_argument('--db_path', type=str, default='', help='Override SQLite DB path (metadata_v5.db)')
-    p.add_argument('--bm25_index_path', type=str, default='', help='Override BM25 index directory (bm25_index_v5)')
-    p.add_argument('--embeddings_path', type=str, default='', help='Override dense path embeddings (.npz)')
+    p.add_argument('--db_path', type=str, default='', help='Override SQLite DB path (metadata.db)')
+    p.add_argument('--bm25_index_path', type=str, default='', help='Override BM25 index directory (bm25_index)')
+    p.add_argument('--embeddings_path', type=str, default='', help='Override dense Fact embeddings (.npz)')
     p.add_argument('--verbose', action='store_true')
     p.add_argument('--no_llm', action='store_true')
     p.add_argument('--concurrency', type=int, default=CONCURRENCY)
     p.add_argument('--limit', type=int, default=0, help='Limit number of questions (0 = all)')
     p.add_argument('--top_k_passages', type=int, default=5, help='Answering passages (applies to SQ + Final)')
-    p.add_argument('--top_k_paths', type=int, default=30, help='Answering paths (applies to SQ + Final)')
+    p.add_argument('--top_k_paths', type=int, default=30, help='Answering Facts (applies to SQ + Final)')
     p.add_argument('--bm25_weight', type=float, default=1.0)
     p.add_argument('--dense_weight', type=float, default=1.3)
 
@@ -186,7 +186,7 @@ def parse_args():
     return p.parse_args()
 
 
-async def run_test(args) -> None:
+async def run_multihop(args) -> None:
     load_dotenv()
     init_logger()
 
@@ -201,7 +201,7 @@ async def run_test(args) -> None:
     output_path = args.output or f"Results/{args.dataset}_result.json"
 
     print("=" * 80)
-    print(f"V12 Expansion Test - {str(args.dataset).upper()}")
+    print(f"TRA-RAG Multi-hop QA - {str(args.dataset).upper()}")
     print("=" * 80)
     print(f"Concurrency: {int(args.concurrency)}")
     print(f"no_llm: {bool(args.no_llm)}")
@@ -212,7 +212,7 @@ async def run_test(args) -> None:
         cfg = detect_provider()
         client = create_async_chat_client(cfg)
 
-    retriever = HybridPathRetriever(
+    retriever = HybridFactRetriever(
         bm25_index_path=bm25_index_path,
         embeddings_path=embeddings_path,
         bm25_weight=float(args.bm25_weight),
@@ -232,7 +232,7 @@ async def run_test(args) -> None:
         f"Retrieval pool: passages={retrieval_top_k_passages}, paths={retrieval_top_k_paths}"
     )
 
-    pipeline = NewMultihopPipelineV12PathsHintExpansion(
+    pipeline = TRAPipeline(
         client=client,  # type: ignore[arg-type]
         budget_profile=args.budget_profile,
         retrieval_candidates=args.retrieval_candidates,
@@ -317,7 +317,7 @@ async def run_test(args) -> None:
                 'subset_sha1': str(subset_hash),
                 # Final selection policy:
                 # - Answering totals are controlled by answer_k_passages/answer_k_paths
-                # - Seed/rerank splits come from v12 mapping tables (see pipeline code)
+                # - Seed/rerank splits come from budget profile tables (see pipeline code)
                 'seed_k': int(args.seed_k),
                 'expansion_k': int(args.expansion_k),
                 'expansion_dense_candidates': int(args.expansion_dense_candidates),
@@ -402,7 +402,7 @@ async def run_test(args) -> None:
 
 def main() -> None:
     args = parse_args()
-    asyncio.run(run_test(args))
+    asyncio.run(run_multihop(args))
 
 
 if __name__ == '__main__':
